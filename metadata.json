@@ -1,0 +1,5 @@
+{
+  "name": "Mokuro Comic Reader",
+  "description": "A modern web-based comic reader with Bookshelf management, OCR text overlay support, and Anki integration.",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="https://lucide.dev/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Mokuro Comic Reader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              surface: '#18181b', // zinc-900
+              surfaceLight: '#27272a', // zinc-800
+              primary: '#3b82f6', // blue-500
+              accent: '#f59e0b', // amber-500
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      /* Hide scrollbar for Chrome, Safari and Opera */
+      .no-scrollbar::-webkit-scrollbar {
+          display: none;
+      }
+      /* Hide scrollbar for IE, Edge and Firefox */
+      .no-scrollbar {
+          -ms-overflow-style: none;  /* IE and Edge */
+          scrollbar-width: none;  /* Firefox */
+      }
+      body {
+        background-color: #09090b; /* zinc-950 */
+        color: #f4f4f5; /* zinc-100 */
+        overflow: hidden;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "jszip": "https://aistudiocdn.com/jszip@^3.10.1",
+    "pdfjs-dist": "https://aistudiocdn.com/pdfjs-dist@3.11.174/build/pdf.min.mjs",
+    "pdfjs-dist/build/pdf.worker.min.mjs": "https://aistudiocdn.com/pdfjs-dist@3.11.174/build/pdf.worker.min.mjs",
+    "tesseract.js": "https://aistudiocdn.com/tesseract.js@5.1.0/dist/tesseract.esm.min.js"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
