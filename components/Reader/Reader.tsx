@@ -12,6 +12,18 @@ import { ChevronLeft, ChevronRight, Settings, ArrowLeft, Maximize2, Minimize2, S
 import JSZip from 'jszip';
 import { t } from '../../services/i18n';
 
+// UUID Polyfill for iOS/Insecure Contexts
+const generateUUID = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+};
+
 interface ReaderProps {
   book: Book;
   onExit: () => void;
@@ -357,7 +369,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
           setEditingBookmark(existing);
       } else {
           setEditingBookmark({
-              id: crypto.randomUUID(),
+              id: generateUUID(),
               pageIndex: currentPage,
               color: 'blue',
               createdAt: Date.now()

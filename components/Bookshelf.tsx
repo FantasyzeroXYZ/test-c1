@@ -7,6 +7,18 @@ import { Plus, Trash2, BookOpen, Upload, FileText, Settings, Maximize2, Minimize
 import { t } from '../services/i18n';
 import Sidebar from './Reader/Sidebar'; 
 
+// UUID Polyfill for iOS/Insecure Contexts
+const generateUUID = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+};
+
 interface BookshelfProps {
   onOpenBook: (book: Book) => void;
   settings: ReaderSettings;
@@ -77,7 +89,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
     setLoading(true);
     try {
         const newBook: Book = {
-            id: crypto.randomUUID(),
+            id: generateUUID(),
             title: editTitle || pendingFile.name.replace(/\.(zip|cbz)$/i, ''),
             type: editType,
             coverUrl: editCover || '',
