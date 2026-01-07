@@ -32,97 +32,130 @@ interface ImageViewerProps {
   isSelecting?: boolean;
   onCrop?: (dataUrl: string) => void;
   isMagnifying?: boolean;
+  magnifierLevel?: number;
 }
 
 const ImageViewer: React.FC<ImageViewerProps> = memo((props) => {
-    // Shared container ref to find images for cropping
     const containerRef = useRef<HTMLDivElement>(null);
-
     const Viewer = props.settings.pageViewMode === 'webtoon' ? WebtoonViewer : PaginationViewer;
     
     return (
-        <div className="relative w-full h-full" ref={containerRef}>
+        <div className="relative w-full h-full overflow-hidden" ref={containerRef} style={{ touchAction: 'none' }}>
             <Viewer {...props} containerRef={containerRef} />
             {props.isSelecting && props.onCrop && (
                 <CropOverlay containerRef={containerRef} onCrop={props.onCrop} />
             )}
             {props.isMagnifying && (
-                <MagnifierOverlay containerRef={containerRef} />
+                <MagnifierOverlay containerRef={containerRef} zoomLevel={props.magnifierLevel || 2.5} />
             )}
         </div>
     );
 });
 
 // --- Magnifier Overlay Component ---
-const MagnifierOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | null> }> = ({ containerRef }) => {
-    const [lens, setLens] = useState<{ x: number, y: number, src: string, imgRect: DOMRect } | null>(null);
+const MagnifierOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | null>, zoomLevel: number }> = ({ containerRef, zoomLevel }) => {
+    const [pos, setPos] = useState<{ x: number, y: number } | null>(null);
+    const [lensData, setLensData] = useState<{ src: string, imgRect: DOMRect } | null>(null);
+    const isDragging = useRef(false);
 
-    const handleMove = (e: React.PointerEvent) => {
+    // Initialize position at center
+    useEffect(() => {
+        if (containerRef.current) {
+            const rect = containerRef.current.getBoundingClientRect();
+            setPos({ x: rect.width / 2, y: rect.height / 2 });
+        }
+    }, []);
+
+    const updateLensData = (x: number, y: number) => {
         if (!containerRef.current) return;
         const images = containerRef.current.querySelectorAll('img');
         let found = false;
         
-        // Reverse order to handle z-index stacking if any
         for (let i = images.length - 1; i >= 0; i--) {
             const img = images[i];
             const rect = img.getBoundingClientRect();
-            if (e.clientX >= rect.left && e.clientX <= rect.right && 
-                e.clientY >= rect.top && e.clientY <= rect.bottom) {
-                
-                setLens({
-                    x: e.clientX,
-                    y: e.clientY,
-                    src: img.src,
-                    imgRect: rect
-                });
+            if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                setLensData({ src: img.src, imgRect: rect });
                 found = true;
                 break;
             }
         }
-        if (!found) setLens(null);
+        if (!found) setLensData(null);
+    };
+
+    useEffect(() => {
+        if (pos) updateLensData(pos.x, pos.y);
+    }, [pos]);
+
+    // Only allow drag if starting on the lens itself
+    const handlePointerDown = (e: React.PointerEvent) => {
+        // We only care if the user clicked ON the lens, which is handled by the lens component
+        // But since lens is child, we can handle global move here if drag started
+    };
+
+    const handlePointerMove = (e: React.PointerEvent) => {
+        if (isDragging.current) {
+            e.preventDefault();
+            setPos({ x: e.clientX, y: e.clientY });
+        }
+    };
+
+    const handlePointerUp = (e: React.PointerEvent) => {
+        if (isDragging.current) {
+            isDragging.current = false;
+            // (e.target as HTMLElement).releasePointerCapture(e.pointerId); // Managed by lens
+        }
     };
 
     return (
         <div 
-            className="absolute inset-0 z-[60] cursor-none touch-none bg-transparent"
-            onPointerMove={handleMove}
-            onPointerLeave={() => setLens(null)}
+            className="absolute inset-0 z-[60] touch-none pointer-events-none"
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
         >
-            {lens && <MagnifierLens {...lens} />}
+            {pos && lensData && (
+                <MagnifierLens 
+                    x={pos.x} y={pos.y} 
+                    src={lensData.src} 
+                    imgRect={lensData.imgRect} 
+                    zoomLevel={zoomLevel}
+                    onDragStart={(e) => {
+                        isDragging.current = true;
+                        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                    }}
+                />
+            )}
         </div>
     );
 };
 
-const MagnifierLens: React.FC<{ x: number, y: number, src: string, imgRect: DOMRect }> = ({ x, y, src, imgRect }) => {
-    const ZOOM = 2;
-    const SIZE = 200;
-    
-    // Calculate position relative to image top-left (0..1)
+const MagnifierLens: React.FC<{ 
+    x: number, y: number, src: string, imgRect: DOMRect, zoomLevel: number,
+    onDragStart: (e: React.PointerEvent) => void 
+}> = ({ x, y, src, imgRect, zoomLevel, onDragStart }) => {
+    const SIZE = 240;
     const relX = (x - imgRect.left) / imgRect.width;
     const relY = (y - imgRect.top) / imgRect.height;
-    
-    // Calculate background position to center the lens content
-    const bgX = relX * imgRect.width * ZOOM - SIZE / 2;
-    const bgY = relY * imgRect.height * ZOOM - SIZE / 2;
+    const bgX = relX * imgRect.width * zoomLevel - SIZE / 2;
+    const bgY = relY * imgRect.height * zoomLevel - SIZE / 2;
 
     return (
-        <div style={{
-            position: 'fixed',
-            left: x - SIZE / 2,
-            top: y - SIZE / 2,
-            width: SIZE,
-            height: SIZE,
-            borderRadius: '50%',
-            border: '4px solid rgba(255, 255, 255, 0.9)',
-            boxShadow: '0 4px 25px rgba(0,0,0,0.6)',
-            backgroundColor: '#000',
-            backgroundImage: `url(${src})`,
-            // backgroundSize must scale based on the displayed size of the image (imgRect) not natural size
-            backgroundSize: `${imgRect.width * ZOOM}px ${imgRect.height * ZOOM}px`,
-            backgroundPosition: `-${bgX}px -${bgY}px`,
-            pointerEvents: 'none',
-            zIndex: 100,
-        }} />
+        <div 
+            className="pointer-events-auto z-[70] fixed border-4 border-white shadow-2xl rounded-full bg-black cursor-move"
+            onPointerDown={onDragStart}
+            onPointerUp={(e) => (e.target as HTMLElement).releasePointerCapture(e.pointerId)}
+            style={{
+                left: x - SIZE / 2,
+                top: y - SIZE / 2,
+                width: SIZE,
+                height: SIZE,
+                backgroundImage: `url(${src})`,
+                backgroundSize: `${imgRect.width * zoomLevel}px ${imgRect.height * zoomLevel}px`,
+                backgroundPosition: `-${bgX}px -${bgY}px`,
+            }} 
+        >
+            <div className="absolute inset-0 border border-black/10 rounded-full" />
+        </div>
     );
 };
 
@@ -159,14 +192,12 @@ const CropOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | nul
         const h = Math.abs(currPos.y - startPos.y);
 
         if (w > 10 && h > 10) {
-            // Perform crop
             const imgs = containerRef.current.querySelectorAll('img');
             let bestCrop: string | null = null;
             let maxArea = 0;
 
             imgs.forEach((img) => {
                 const rect = img.getBoundingClientRect();
-                // Check intersection
                 const interX = Math.max(rect.left, x);
                 const interY = Math.max(rect.top, y);
                 const interW = Math.min(rect.right, x + w) - interX;
@@ -176,11 +207,8 @@ const CropOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | nul
                     const area = interW * interH;
                     if (area > maxArea) {
                         maxArea = area;
-                        
-                        // Crop logic
                         const scaleX = img.naturalWidth / rect.width;
                         const scaleY = img.naturalHeight / rect.height;
-                        
                         const sx = (interX - rect.left) * scaleX;
                         const sy = (interY - rect.top) * scaleY;
                         const sw = interW * scaleX;
@@ -232,7 +260,6 @@ const CropOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | nul
 const WebtoonViewer: React.FC<ImageViewerProps & { containerRef: React.RefObject<HTMLDivElement | null> }> = ({ 
     zip, imageFiles, onOcrClick, settings, mokuroData, showOcr, currentPage, onPageChange, containerRef
 }) => {
-    // ... existing Webtoon logic ...
     const scrollRafId = useRef<number | null>(null);
     const lastScrollTime = useRef(0);
     const isScrollingProgrammatically = useRef(false);
@@ -292,8 +319,8 @@ const WebtoonViewer: React.FC<ImageViewerProps & { containerRef: React.RefObject
     }, [onPageChange, imageFiles]);
 
     return (
-        <div className="w-full h-full overflow-y-auto bg-zinc-900 scroll-smooth overscroll-none">
-            <div className="max-w-3xl mx-auto flex flex-col items-center bg-black min-h-full pb-32">
+        <div className="w-full h-full overflow-y-auto scroll-smooth overscroll-none">
+            <div className={`max-w-3xl mx-auto flex flex-col items-center min-h-full pb-32 ${settings.theme === 'light' ? 'bg-zinc-200' : 'bg-black'}`}>
                 {imageFiles?.map((filename, index) => {
                      const pageOcr = mokuroData?.pages.find(p => p.img_path.includes(filename)) || mokuroData?.pages[index];
                     return (
@@ -308,6 +335,7 @@ const WebtoonViewer: React.FC<ImageViewerProps & { containerRef: React.RefObject
                             onOcrClick={onOcrClick}
                             dictionaryMode={settings.dictionaryMode}
                             overlayStyle={settings.overlayStyle}
+                            theme={settings.theme}
                         />
                     )
                 })}
@@ -325,8 +353,9 @@ const LazyWebtoonImage: React.FC<{
     showOcr: boolean,
     onOcrClick: (text: string, box: MokuroBlock) => void,
     dictionaryMode: 'panel' | 'popup',
-    overlayStyle: 'hidden' | 'outline' | 'fill'
-}> = ({ id, index, zip, filename, ocr, showOcr, onOcrClick, dictionaryMode, overlayStyle }) => {
+    overlayStyle: 'hidden' | 'outline' | 'fill',
+    theme: 'light' | 'dark'
+}> = ({ id, index, zip, filename, ocr, showOcr, onOcrClick, dictionaryMode, overlayStyle, theme }) => {
     const [url, setUrl] = useState<string>('');
     const imgRef = useRef<HTMLDivElement>(null);
     const [isVisible, setIsVisible] = useState(false);
@@ -346,6 +375,7 @@ const LazyWebtoonImage: React.FC<{
     }, [isVisible, zip, filename, url]);
 
     const handlePointerUp = (e: React.PointerEvent) => {
+        if (!showOcr) return; // Prevent OCR if disabled
         if (!ocr || !imgRef.current) return;
         const img = imgRef.current.querySelector('img');
         if (!img) return;
@@ -372,7 +402,7 @@ const LazyWebtoonImage: React.FC<{
     return (
         <div 
             id={id} ref={imgRef} 
-            className="w-full relative min-h-[100px] flex items-center justify-center bg-zinc-950 border-b border-zinc-900"
+            className={`w-full relative min-h-[100px] flex items-center justify-center border-b ${theme === 'light' ? 'bg-zinc-100 border-zinc-200' : 'bg-zinc-950 border-zinc-900'}`}
             onPointerUp={handlePointerUp}
         >
             {url ? (
@@ -393,99 +423,49 @@ const LazyWebtoonImage: React.FC<{
                         </div>
                     )}
                 </div>
-            ) : <div className="w-full h-[500px] animate-pulse bg-zinc-800" />}
+            ) : <div className={`w-full h-[500px] animate-pulse ${theme === 'light' ? 'bg-zinc-200' : 'bg-zinc-800'}`} />}
         </div>
     );
 };
 
-// --- Pagination Mode Viewer ---
+// --- Pagination Mode Viewer with Drag/Zoom ---
 const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObject<HTMLDivElement | null> }> = ({ 
   pages, showOcr, onOcrClick, scale, setScale, readingDirection, settings, containerRef
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
+  
+  // Use a mutable ref for transform state to avoid react render loop on high frequency events
   const transform = useRef({ x: 0, y: 0, scale: 1 });
+  
+  // Interaction state
   const isDragging = useRef(false);
-  const startPos = useRef({ x: 0, y: 0 });
-  const lastPos = useRef({ x: 0, y: 0 });
-  const velocity = useRef({ x: 0, y: 0 });
-  const rafId = useRef<number | null>(null);
-  const inertiaRafId = useRef<number | null>(null);
-  const initialDist = useRef<number | null>(null);
+  const startPos = useRef({ x: 0, y: 0 }); // for drag delta
+  const lastPos = useRef({ x: 0, y: 0 }); 
+  const initialDist = useRef<number | null>(null); // for pinch zoom
   const initialScale = useRef(1);
 
+  // Sync prop scale change (e.g. from reset)
   useEffect(() => {
-      const handleGlobalUp = () => {
-          if (isDragging.current) {
-              isDragging.current = false;
-              startInertia();
-          }
-      };
-      window.addEventListener('pointerup', handleGlobalUp);
-      window.addEventListener('blur', handleGlobalUp);
-      return () => {
-          window.removeEventListener('pointerup', handleGlobalUp);
-          window.removeEventListener('blur', handleGlobalUp);
-      };
-  }, []);
-
-  useEffect(() => {
-      // Sync props scale with ref
-      if (Math.abs(scale - transform.current.scale) > 0.01) {
-        transform.current.scale = scale;
-        updateDOM();
+      // If props scale implies reset, update ref
+      if (Math.abs(scale - transform.current.scale) > 0.01 && scale === 1) {
+          transform.current.scale = 1;
+          transform.current.x = 0;
+          transform.current.y = 0;
+          updateDOM();
       }
   }, [scale]);
 
-  // Reset transform when pages (current page) changes
+  // Reset on page change
   useEffect(() => {
-    transform.current = { x: 0, y: 0, scale: 1 };
-    velocity.current = { x: 0, y: 0 };
-    if (inertiaRafId.current) cancelAnimationFrame(inertiaRafId.current);
-    updateDOM();
-    if (scale !== 1) setScale(1); 
-  }, [pages]); 
+      transform.current = { x: 0, y: 0, scale: 1 };
+      updateDOM();
+      if (scale !== 1) setScale(1);
+  }, [pages]);
 
   const updateDOM = () => {
       if (contentRef.current) {
-        contentRef.current.style.transform = `translate(${transform.current.x}px, ${transform.current.y}px) scale(${transform.current.scale})`;
+          contentRef.current.style.transform = `translate(${transform.current.x}px, ${transform.current.y}px) scale(${transform.current.scale})`;
       }
-  };
-
-  const startInertia = () => {
-    // Only apply inertia if scaled up or moved significantly, but here we just drift to stop
-    // If not scaled, we might want to snap back to center? 
-    // Requirement: "Defaults to original display way" -> if scale is 1, center it.
-    if (transform.current.scale <= 1.01) {
-         // Snap back if scale is ~1
-         velocity.current = {x:0, y:0};
-         const snap = () => {
-             transform.current.x *= 0.8;
-             transform.current.y *= 0.8;
-             updateDOM();
-             if (Math.abs(transform.current.x) > 0.5 || Math.abs(transform.current.y) > 0.5) {
-                 requestAnimationFrame(snap);
-             } else {
-                 transform.current.x = 0;
-                 transform.current.y = 0;
-                 updateDOM();
-             }
-         };
-         requestAnimationFrame(snap);
-         return;
-    }
-
-    if (Math.abs(velocity.current.x) < 0.1 && Math.abs(velocity.current.y) < 0.1) return;
-    const friction = 0.92;
-    const step = () => {
-        if (isDragging.current) return;
-        velocity.current.x *= friction; velocity.current.y *= friction;
-        transform.current.x += velocity.current.x; transform.current.y += velocity.current.y;
-        updateDOM();
-        if (Math.abs(velocity.current.x) > 0.1 || Math.abs(velocity.current.y) > 0.1) {
-            inertiaRafId.current = requestAnimationFrame(step);
-        }
-    };
-    inertiaRafId.current = requestAnimationFrame(step);
   };
 
   const getDistance = (p1: React.PointerEvent, p2: React.PointerEvent) => {
@@ -496,7 +476,6 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
 
   const onPointerDown = (e: React.PointerEvent) => {
       if ((e.target as HTMLElement).closest('button')) return;
-      if (inertiaRafId.current) cancelAnimationFrame(inertiaRafId.current);
       
       containerRef.current?.setPointerCapture(e.pointerId);
       pointers.current.set(e.pointerId, e);
@@ -505,9 +484,8 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
           isDragging.current = true;
           startPos.current = { x: e.clientX, y: e.clientY }; 
           lastPos.current = { x: e.clientX, y: e.clientY };
-          velocity.current = { x: 0, y: 0 };
       } else if (pointers.current.size === 2) {
-          isDragging.current = false; 
+          isDragging.current = false; // Pinch overrides drag
           const p = Array.from(pointers.current.values());
           initialDist.current = getDistance(p[0], p[1]);
           initialScale.current = transform.current.scale;
@@ -520,27 +498,31 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
       e.preventDefault();
 
       if (pointers.current.size === 2 && initialDist.current) {
+          // Pinch Zoom
           const p = Array.from(pointers.current.values());
           const dist = getDistance(p[0], p[1]);
-          const newScale = Math.min(Math.max(0.5, initialScale.current * (dist / initialDist.current)), 5);
+          const newScale = Math.min(Math.max(1, initialScale.current * (dist / initialDist.current)), 5);
+          
           transform.current.scale = newScale;
+          // If zooming out to 1, reset center
+          if (newScale <= 1.05) {
+              transform.current.x = 0;
+              transform.current.y = 0;
+          }
           updateDOM();
-          return;
-      }
-
-      if (isDragging.current && pointers.current.size === 1) {
-          const dx = e.clientX - lastPos.current.x;
-          const dy = e.clientY - lastPos.current.y;
-          velocity.current = { x: dx, y: dy }; 
-          
-          // Allow dragging only if scaled > 1 (or just dragging generally, but usually pan implies zoom)
-          // But user asked for drag/zoom capability.
-          transform.current.x += dx; 
-          transform.current.y += dy;
-          
-          lastPos.current = { x: e.clientX, y: e.clientY };
-          if (rafId.current) cancelAnimationFrame(rafId.current);
-          rafId.current = requestAnimationFrame(updateDOM);
+      } else if (isDragging.current && pointers.current.size === 1) {
+          // Pan (only if scaled > 1)
+          if (transform.current.scale > 1.01) {
+              const dx = e.clientX - lastPos.current.x;
+              const dy = e.clientY - lastPos.current.y;
+              transform.current.x += dx; 
+              transform.current.y += dy;
+              lastPos.current = { x: e.clientX, y: e.clientY };
+              requestAnimationFrame(updateDOM);
+          } else {
+              // Just track position for click detection if not scaled
+              lastPos.current = { x: e.clientX, y: e.clientY };
+          }
       }
   };
 
@@ -550,52 +532,66 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
       
       if (pointers.current.size < 2) initialDist.current = null;
       
-      if (pointers.current.size === 0 && isDragging.current) {
-          isDragging.current = false;
-          
-          const dist = Math.sqrt(Math.pow(e.clientX - startPos.current.x, 2) + Math.pow(e.clientY - startPos.current.y, 2));
-          if (dist < 5) {
-               // Click handling for OCR
-               if (!contentRef.current) return;
-               const wrappers = Array.from(contentRef.current.children) as HTMLElement[];
-               const clickedWrapperIndex = wrappers.findIndex(w => {
-                   const r = w.getBoundingClientRect();
-                   return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-               });
-
-               if (clickedWrapperIndex !== -1) {
-                   const wrapper = wrappers[clickedWrapperIndex];
-                   const page = pages[clickedWrapperIndex]; 
-                   
-                   if (page && page.ocr) {
-                       const img = wrapper.querySelector('img');
-                       if (img && img.naturalWidth) {
-                           const rect = img.getBoundingClientRect();
-                           const x = e.clientX - rect.left;
-                           const y = e.clientY - rect.top;
-                           const scaleX = img.naturalWidth / rect.width;
-                           const scaleY = img.naturalHeight / rect.height;
-                           const svgX = x * scaleX;
-                           const svgY = y * scaleY;
-
-                           for (const block of page.ocr.blocks) {
-                               const [bx1, by1, bx2, by2] = block.box;
-                               if (svgX >= bx1 && svgX <= bx2 && svgY >= by1 && svgY <= by2) {
-                                   onOcrClick(block.lines.join('\n'), block);
-                                   return; 
-                               }
-                           }
-                       }
+      if (pointers.current.size === 0) {
+          if (isDragging.current) {
+              isDragging.current = false;
+              // Click check
+              const dist = Math.sqrt(Math.pow(e.clientX - startPos.current.x, 2) + Math.pow(e.clientY - startPos.current.y, 2));
+              if (dist < 10) { 
+                   handleOCRClickLogic(e);
+              } else {
+                  // Snap back if scaled to 1
+                   if (transform.current.scale <= 1.05) {
+                       transform.current.x = 0;
+                       transform.current.y = 0;
+                       transform.current.scale = 1;
+                       updateDOM();
+                       setScale(1);
                    }
-               }
-          } else {
-              startInertia();
+              }
           }
       } else if (pointers.current.size === 1) {
           const p = pointers.current.values().next().value;
           lastPos.current = { x: p.clientX, y: p.clientY };
           isDragging.current = true;
       }
+  };
+
+  const handleOCRClickLogic = (e: React.PointerEvent) => {
+       if (!showOcr) return; // Fix: Prevent click if OCR disabled
+       if (!contentRef.current) return;
+       // Find which page image was clicked
+       const wrappers = Array.from(contentRef.current.children) as HTMLElement[];
+       const clickedWrapperIndex = wrappers.findIndex(w => {
+           const r = w.getBoundingClientRect();
+           return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+       });
+
+       if (clickedWrapperIndex !== -1) {
+           const wrapper = wrappers[clickedWrapperIndex];
+           const page = pages[clickedWrapperIndex]; 
+           
+           if (page && page.ocr) {
+               const img = wrapper.querySelector('img');
+               if (img && img.naturalWidth) {
+                   const rect = img.getBoundingClientRect();
+                   const x = e.clientX - rect.left;
+                   const y = e.clientY - rect.top;
+                   const scaleX = img.naturalWidth / rect.width;
+                   const scaleY = img.naturalHeight / rect.height;
+                   const svgX = x * scaleX;
+                   const svgY = y * scaleY;
+
+                   for (const block of page.ocr.blocks) {
+                       const [bx1, by1, bx2, by2] = block.box;
+                       if (svgX >= bx1 && svgX <= bx2 && svgY >= by1 && svgY <= by2) {
+                           onOcrClick(block.lines.join('\n'), block);
+                           return; 
+                       }
+                   }
+               }
+           }
+       }
   };
 
   const [showTranslated, setShowTranslated] = useState(false);
@@ -615,7 +611,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
 
   return (
     <div 
-      className="w-full h-full overflow-hidden bg-black relative flex items-center justify-center cursor-grab touch-none select-none"
+      className="w-full h-full overflow-hidden relative flex items-center justify-center cursor-grab touch-none select-none"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -623,7 +619,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
       onWheel={(e) => {
           if (e.ctrlKey) {
              e.preventDefault();
-             const newScale = Math.min(Math.max(0.5, transform.current.scale - e.deltaY * 0.01), 5);
+             const newScale = Math.min(Math.max(1, transform.current.scale - e.deltaY * 0.01), 5);
              transform.current.scale = newScale;
              updateDOM();
           }
@@ -689,7 +685,8 @@ const ImageOverlay: React.FC<{
             case 'outline': 
                 return 'fill-transparent stroke-yellow-200/50 stroke-[2px] pointer-events-auto cursor-pointer hover:stroke-yellow-400 hover:fill-yellow-400/10 transition-all duration-150';
             default: 
-                return 'fill-transparent stroke-transparent pointer-events-none';
+                // Changed from pointer-events-none to auto+cursor-pointer so users can click hidden bubbles
+                return 'fill-transparent stroke-transparent pointer-events-auto cursor-pointer';
         }
     };
 

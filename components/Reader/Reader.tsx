@@ -8,8 +8,7 @@ import ImageViewer, { PageContent } from './ImageViewer';
 import DictionaryPanel from './DictionaryPanel';
 import Sidebar from './Sidebar';
 import BookmarkModal from './BookmarkModal';
-import { ChevronLeft, ChevronRight, Settings, ArrowLeft, Maximize2, Minimize2, Search, Loader2, Crop, Bookmark as BookmarkIcon, Plus, ZoomIn } from 'lucide-react';
-import { defaultAnkiSettings } from '../../services/anki';
+import { ChevronLeft, ChevronRight, Settings, ArrowLeft, Maximize2, Minimize2, Search, Loader2, Crop, Bookmark as BookmarkIcon, ZoomIn, X, Minus, Plus } from 'lucide-react';
 import JSZip from 'jszip';
 import { t } from '../../services/i18n';
 
@@ -18,9 +17,11 @@ interface ReaderProps {
   onExit: () => void;
   settings: ReaderSettings;
   setSettings: (s: ReaderSettings) => void;
+  ankiSettings: AnkiSettingsType;
+  setAnkiSettings: (s: AnkiSettingsType) => void;
 }
 
-const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) => {
+const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, ankiSettings, setAnkiSettings }) => {
   const [zip, setZip] = useState<JSZip | null>(null);
   const [imageFiles, setImageFiles] = useState<string[]>([]);
   const [translatedZip, setTranslatedZip] = useState<JSZip | null>(null);
@@ -35,32 +36,48 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [isLeftActive, setIsLeftActive] = useState(false);
   const [isRightActive, setIsRightActive] = useState(false);
-  const [dictQuery, setDictQuery] = useState<{text: string, context?: string} | null>(null);
-  const [ankiSettings, setAnkiSettings] = useState<AnkiSettingsType>(() => {
-      const saved = localStorage.getItem('ankiSettings');
-      return saved ? JSON.parse(saved) : defaultAnkiSettings;
-  });
   
+  const [dictQuery, setDictQuery] = useState<{
+      text: string, 
+      context?: string, 
+      imageBase64?: string, 
+      translatedImageBase64?: string
+  } | null>(null);
+
   const [isEditingPage, setIsEditingPage] = useState(false);
   const [pageInput, setPageInput] = useState('');
 
-  // OCR Selection Mode
   const [isOcrSelecting, setIsOcrSelecting] = useState(false);
   const [isOcrLoading, setIsOcrLoading] = useState(false);
+  const ocrCancelledRef = useRef(false);
   
-  // Magnifier Mode
   const [isMagnifying, setIsMagnifying] = useState(false);
+  const [magnifierLevel, setMagnifierLevel] = useState(2.5);
 
-  // Bookmark state
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(book.bookmarks || []);
   const [editingBookmark, setEditingBookmark] = useState<Bookmark | null>(null);
 
-  // Apply book type constraints strictly
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const [isIOS, setIsIOS] = useState(false);
+  useEffect(() => {
+      const ua = window.navigator.userAgent;
+      const ios = /iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream;
+      setIsIOS(ios);
+  }, []);
+
+  // Compute effective settings (with Book-specific overrides)
+  const effectiveSettings = React.useMemo(() => {
+      if (book.language) {
+          return { ...settings, learningLanguage: book.language as any };
+      }
+      return settings;
+  }, [settings, book.language]);
+
   useEffect(() => {
       if (book.type === 'webtoon' && settings.pageViewMode !== 'webtoon') {
           setSettings({ ...settings, pageViewMode: 'webtoon' });
       } else if (book.type === 'manga' && settings.pageViewMode === 'webtoon') {
-          // Force manga back to single page if it was somehow set to webtoon
           setSettings({ ...settings, pageViewMode: 'single' });
       }
   }, [book.type, settings.pageViewMode]);
@@ -93,6 +110,8 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
       const req = store.get(book.id);
       req.onsuccess = async () => {
           const updatedBook = req.result as Book;
+          // Sync book data including language
+          book.language = updatedBook.language;
           if (updatedBook.translatedFile && updatedBook.translatedFile !== book.translatedFile) {
               const { zipInstance, imageFiles } = await initZip(updatedBook.translatedFile);
               setTranslatedZip(zipInstance);
@@ -142,10 +161,6 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
             if (mokuroData) {
                  ocr = mokuroData.pages.find(p => p.img_path.includes(filename)) || mokuroData.pages[idx] || null;
             } 
-            
-            if (!ocr && settings.useLiveOcr && showOcr) {
-                 performLiveOcr(url, filename, idx);
-            }
 
             pages.push({ url, ocr, isTranslated: false });
 
@@ -166,19 +181,8 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
     };
     loadPages();
     return () => { active = false; };
-  }, [zip, imageFiles, currentPage, settings.pageViewMode, settings.compareMode, settings.useLiveOcr, mokuroData, translatedZip, book.pageOffset, showOcr]); 
+  }, [zip, imageFiles, currentPage, settings.pageViewMode, settings.compareMode, mokuroData, translatedZip, book.pageOffset, showOcr]); 
 
-  const performLiveOcr = async (url: string, filename: string, idx: number) => {
-      try {
-          const result = await runTesseract(url, settings.tesseractLanguage, filename);
-          setCurrentPagesData(prev => prev.map(p => {
-              if (p.url === url) return { ...p, ocr: result };
-              return p;
-          }));
-      } catch (e) { console.error("Live OCR Failed", e); }
-  };
-
-  useEffect(() => { localStorage.setItem('ankiSettings', JSON.stringify(ankiSettings)); }, [ankiSettings]);
   
   useEffect(() => {
       if (settings.pageViewMode !== 'webtoon') {
@@ -192,37 +196,22 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
   const nextPage = useCallback(() => { setCurrentPage(p => Math.min(imageFiles.length - 1, p + step)); setScale(1); }, [imageFiles.length, step]);
   const toggleFullscreen = () => { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); };
 
-  // Improved Gamepad Support with Custom Mappings
+  // Improved Gamepad Support
   const lastGamepadAction = useRef(0);
   useEffect(() => {
       let rafId: number;
       const pollGamepad = () => {
           const gamepads = navigator.getGamepads();
-          // Check all connected gamepads
           for (const gp of gamepads) {
               if (!gp) continue;
-              
               const now = Date.now();
-              // Debounce to prevent rapid firing (250ms)
               if (now - lastGamepadAction.current > 250) {
                   const pressedInputs: string[] = [];
-
-                  // Check Buttons
-                  gp.buttons.forEach((btn, idx) => {
-                      if (btn.pressed) pressedInputs.push(`GP_Btn_${idx}`);
-                  });
-
-                  // Check Axes
-                  gp.axes.forEach((val, idx) => {
-                      if (val < -0.5) pressedInputs.push(`GP_Axis_${idx}_-`);
-                      if (val > 0.5) pressedInputs.push(`GP_Axis_${idx}_+`);
-                  });
+                  gp.buttons.forEach((btn, idx) => { if (btn.pressed) pressedInputs.push(`GP_Btn_${idx}`); });
+                  gp.axes.forEach((val, idx) => { if (val < -0.5) pressedInputs.push(`GP_Axis_${idx}_-`); if (val > 0.5) pressedInputs.push(`GP_Axis_${idx}_+`); });
 
                   if (pressedInputs.length > 0) {
-                      // Check against keybindings
                       const keys = settings.keybindings;
-                      
-                      // Helper to check intersection
                       const matches = (actionKeys: string[]) => actionKeys.some(k => pressedInputs.includes(k));
 
                       if (matches(keys.prevPage)) {
@@ -250,11 +239,8 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
   useEffect(() => {
       const handleKey = (e: KeyboardEvent) => {
           if (isEditingPage) return;
-          if (isOcrSelecting || isMagnifying) {
-              if (e.key === 'Escape') {
-                  setIsOcrSelecting(false);
-                  setIsMagnifying(false);
-              }
+          if (isOcrSelecting) {
+              if (e.key === 'Escape') setIsOcrSelecting(false);
               return;
           }
 
@@ -282,7 +268,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
       window.addEventListener('keydown', handleKey);
       document.addEventListener('fullscreenchange', handleFs);
       return () => { window.removeEventListener('keydown', handleKey); document.removeEventListener('fullscreenchange', handleFs); };
-  }, [nextPage, prevPage, settings, isEditingPage, isOcrSelecting, isMagnifying]);
+  }, [nextPage, prevPage, settings, isEditingPage, isOcrSelecting]);
 
   const handleLeftClick = settings.readingDirection === 'ltr' ? prevPage : nextPage;
   const handleRightClick = settings.readingDirection === 'ltr' ? nextPage : prevPage;
@@ -296,22 +282,72 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
       setIsEditingPage(false);
   };
 
+  const captureCurrentPageImage = async () => {
+      if (!currentPagesData[0]) return undefined;
+      try {
+          const resp = await fetch(currentPagesData[0].url);
+          const blob = await resp.blob();
+          return new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.readAsDataURL(blob);
+          });
+      } catch (e) { return undefined; }
+  };
+
+  const captureTranslatedPageImage = async () => {
+      const transPage = currentPagesData.find(p => p.isTranslated);
+      if (!transPage) return undefined;
+      try {
+          const resp = await fetch(transPage.url);
+          const blob = await resp.blob();
+          return new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.readAsDataURL(blob);
+          });
+      } catch (e) { return undefined; }
+  };
+
+  const handleOcrClick = async (text: string) => {
+      if (!showOcr) return; // Fix: Block OCR if disabled
+      const imgBase64 = await captureCurrentPageImage();
+      const transImgBase64 = await captureTranslatedPageImage();
+      setDictQuery({ 
+          text: '', 
+          context: text,
+          imageBase64: imgBase64,
+          translatedImageBase64: transImgBase64
+      });
+  };
+
   const handleCropOcr = async (dataUrl: string) => {
       setIsOcrSelecting(false);
       setIsOcrLoading(true);
+      ocrCancelledRef.current = false;
       try {
           const result = await runTesseract(dataUrl, settings.tesseractLanguage, 'crop.png');
+          
+          if (ocrCancelledRef.current) return;
+
           const text = result.blocks.map(b => b.lines.join(' ')).join('\n\n');
+          
           if (text.trim()) {
-              setDictQuery({ text: text.trim(), context: text.trim() });
+              setDictQuery({ 
+                  text: '', 
+                  context: text.trim(), 
+                  imageBase64: dataUrl // Use crop as image
+              });
           } else {
               alert(t(settings.language, 'noTextFound'));
           }
       } catch (e) {
-          console.error(e);
-          alert("OCR Failed");
+          if (!ocrCancelledRef.current) {
+            console.error(e);
+            alert("OCR Failed");
+          }
       } finally {
-          setIsOcrLoading(false);
+          if (!ocrCancelledRef.current) setIsOcrLoading(false);
       }
   };
 
@@ -353,17 +389,29 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
       setShowSidebar(false);
   };
 
-  // Ref to help with vertical scroll navigation
-  const containerRef = useRef<HTMLDivElement>(null);
+  const toggleOcrSelection = () => {
+      if (!showOcr) { alert(t(settings.language, 'showOcr') + ' ' + t(settings.language, 'ocrStatus').replace('...','').trim()); return; }
+      if (isOcrSelecting) {
+          setIsOcrSelecting(false);
+          return;
+      }
+      if (isOcrLoading) {
+          ocrCancelledRef.current = true;
+          setIsOcrLoading(false);
+          return;
+      }
+      setIsOcrSelecting(true);
+      setIsMagnifying(false);
+  };
 
   return (
-    <div ref={containerRef} className="fixed inset-0 bg-black flex flex-col h-screen w-screen overflow-hidden">
-        <div className="absolute top-0 left-0 right-0 h-14 bg-gradient-to-b from-black/80 to-transparent z-40 flex items-center justify-between px-4 pointer-events-none hover:opacity-100 transition-opacity group">
+    <div ref={containerRef} className={`fixed inset-0 flex flex-col w-screen overflow-hidden ${isIOS ? 'h-[100dvh]' : 'h-screen'} ${settings.theme === 'light' ? 'bg-zinc-100' : 'bg-black'}`}>
+        <div className={`absolute top-0 left-0 right-0 h-14 z-40 flex items-center justify-between px-4 pointer-events-none hover:opacity-100 transition-opacity group ${settings.theme === 'light' ? 'bg-gradient-to-b from-zinc-200/90 to-transparent text-zinc-800' : 'bg-gradient-to-b from-black/80 to-transparent text-white'}`}>
             <div className="flex items-center gap-2 pointer-events-auto">
-                <button onClick={onExit} className="p-2 text-white/80 hover:text-white bg-black/40 rounded-full backdrop-blur-sm"><ArrowLeft size={20} /></button>
+                <button onClick={onExit} className={`p-2 rounded-full backdrop-blur-sm ${settings.theme === 'light' ? 'bg-white/50 hover:bg-white text-zinc-700' : 'bg-black/40 hover:text-white text-white/80'}`}><ArrowLeft size={20} /></button>
             </div>
             
-            <div className="pointer-events-auto text-white/80 text-sm font-medium drop-shadow-md bg-black/40 px-3 py-1 rounded-full backdrop-blur-sm flex items-center gap-2">
+            <div className={`pointer-events-auto text-sm font-medium drop-shadow-md px-3 py-1 rounded-full backdrop-blur-sm flex items-center gap-2 ${settings.theme === 'light' ? 'bg-white/50 text-zinc-900' : 'bg-black/40 text-white/80'}`}>
                 {isOcrLoading && <Loader2 size={14} className="animate-spin text-accent"/>}
                 {settings.pageViewMode === 'webtoon' ? (
                     <span>{imageFiles.length > 0 ? `${currentPage + 1} / ${imageFiles.length}` : 'Loading...'}</span>
@@ -375,11 +423,11 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
                             value={pageInput}
                             onChange={e => setPageInput(e.target.value)}
                             onBlur={() => setIsEditingPage(false)}
-                            className="w-full bg-transparent border-b border-white text-center outline-none text-white"
+                            className="w-full bg-transparent border-b border-current text-center outline-none"
                         />
                     </form>
                 ) : (
-                    <span onClick={() => { setIsEditingPage(true); setPageInput((currentPage + 1).toString()); }} className="cursor-pointer hover:text-white">
+                    <span onClick={() => { setIsEditingPage(true); setPageInput((currentPage + 1).toString()); }} className="cursor-pointer hover:opacity-75">
                         {imageFiles.length > 0 ? `${currentPage + 1} / ${imageFiles.length}` : 'Loading...'}
                     </span>
                 )}
@@ -388,38 +436,48 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
             <div className="flex items-center gap-2 pointer-events-auto">
                  <button 
                     onClick={handleAddBookmark}
-                    className={`p-2 rounded-full backdrop-blur-sm transition-colors ${bookmarks.some(b => b.pageIndex === currentPage) ? 'text-accent bg-accent/20' : 'text-white/80 hover:text-white bg-black/40'}`}
+                    className={`p-2 rounded-full backdrop-blur-sm transition-colors ${bookmarks.some(b => b.pageIndex === currentPage) ? 'text-accent bg-accent/20' : settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}
                     title={t(settings.language, 'addBookmark')}
                  >
                     <BookmarkIcon size={20} fill={bookmarks.some(b => b.pageIndex === currentPage) ? 'currentColor' : 'none'} />
                  </button>
                  <button 
                     onClick={() => { setIsMagnifying(!isMagnifying); setIsOcrSelecting(false); }} 
-                    className={`p-2 rounded-full backdrop-blur-sm transition-colors ${isMagnifying ? 'bg-primary text-white' : 'text-white/80 hover:text-white bg-black/40'}`}
+                    className={`p-2 rounded-full backdrop-blur-sm transition-colors ${isMagnifying ? 'bg-primary text-white' : settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}
                     title={t(settings.language, isMagnifying ? 'exitMagnifier' : 'magnifier')}
                  >
                     <ZoomIn size={20} />
                  </button>
                  <button 
-                    onClick={() => { setIsOcrSelecting(!isOcrSelecting); setIsMagnifying(false); }} 
-                    className={`p-2 rounded-full backdrop-blur-sm transition-colors ${isOcrSelecting ? 'bg-primary text-white' : 'text-white/80 hover:text-white bg-black/40'}`}
+                    onClick={toggleOcrSelection} 
+                    className={`p-2 rounded-full backdrop-blur-sm transition-colors ${isOcrSelecting || isOcrLoading ? 'bg-primary text-white' : settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}
                     title={t(settings.language, isOcrSelecting ? 'exitCropMode' : 'cropMode')}
                  >
-                    <Crop size={20} />
+                    {isOcrLoading ? <X size={20} /> : <Crop size={20} />}
                  </button>
-                 <button onPointerUp={() => setDictQuery({text: '', context: ''})} className="p-2 text-white/80 hover:text-white bg-black/40 rounded-full backdrop-blur-sm pointer-events-auto"><Search size={20} /></button>
-                 <button onClick={toggleFullscreen} className="p-2 text-white/80 hover:text-white bg-black/40 rounded-full backdrop-blur-sm pointer-events-auto">{isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}</button>
-                <button onClick={() => setShowSidebar(true)} className="p-2 text-white/80 hover:text-white bg-black/40 rounded-full backdrop-blur-sm pointer-events-auto"><Settings size={20} /></button>
+                 <button onPointerUp={() => setDictQuery({text: '', context: ''})} className={`p-2 rounded-full backdrop-blur-sm pointer-events-auto ${settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}><Search size={20} /></button>
+                 <button onClick={toggleFullscreen} className={`p-2 rounded-full backdrop-blur-sm pointer-events-auto ${settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}>{isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}</button>
+                <button onClick={() => setShowSidebar(true)} className={`p-2 rounded-full backdrop-blur-sm pointer-events-auto ${settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}><Settings size={20} /></button>
             </div>
         </div>
+        
+        {/* Magnifier Controls */}
+        {isMagnifying && (
+            <div className={`absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-1.5 rounded-full backdrop-blur-md border shadow-lg animate-in slide-in-from-top-2 ${settings.theme === 'light' ? 'bg-white/80 border-zinc-200 text-zinc-700' : 'bg-black/60 border-white/10 text-white'}`}>
+                <span className="text-xs font-bold uppercase mr-1">{t(settings.language, 'zoomLevel')}</span>
+                <button onClick={() => setMagnifierLevel(Math.max(1.5, magnifierLevel - 0.5))} className="p-1 hover:bg-white/20 rounded"><Minus size={14}/></button>
+                <span className="text-xs font-mono w-8 text-center">{magnifierLevel.toFixed(1)}x</span>
+                <button onClick={() => setMagnifierLevel(Math.min(5, magnifierLevel + 0.5))} className="p-1 hover:bg-white/20 rounded"><Plus size={14}/></button>
+            </div>
+        )}
 
         <div className="flex-1 relative w-full h-full">
             <ImageViewer 
                 showOcr={showOcr} 
-                onOcrClick={(text) => setDictQuery({ text, context: text })}
+                onOcrClick={(text) => handleOcrClick(text)}
                 scale={scale} setScale={setScale}
                 readingDirection={settings.readingDirection}
-                settings={settings}
+                settings={effectiveSettings} // Use effective settings here
                 pages={currentPagesData}
                 zip={zip} imageFiles={imageFiles}
                 translatedZip={translatedZip} translatedImageFiles={translatedImageFiles}
@@ -431,24 +489,25 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
                 onCrop={handleCropOcr}
                 highlightOcr={false} 
                 isMagnifying={isMagnifying}
+                magnifierLevel={magnifierLevel}
             />
             {settings.pageViewMode !== 'webtoon' && !isOcrSelecting && !isMagnifying && (
                 <>
-                    <div className={`absolute inset-y-0 left-0 w-8 z-30 cursor-pointer flex items-center justify-center transition-all duration-100 ${isLeftActive ? 'bg-blue-500/30' : 'hover:bg-white/5'}`}
+                    <div className={`absolute inset-y-0 left-0 w-12 z-30 cursor-pointer flex items-center justify-center transition-all duration-100 ${isLeftActive ? 'bg-blue-500/20' : 'hover:bg-transparent'}`}
                         onPointerDown={() => setIsLeftActive(true)} onPointerUp={() => { setIsLeftActive(false); handleLeftClick(); }} onPointerLeave={() => setIsLeftActive(false)}>
-                        <ChevronLeft size={48} className="text-white drop-shadow-lg opacity-0 hover:opacity-100 transition-opacity" />
+                        <ChevronLeft size={48} className="text-white/50 drop-shadow-lg opacity-0 hover:opacity-100 transition-opacity" />
                     </div>
-                    <div className={`absolute inset-y-0 right-0 w-8 z-30 cursor-pointer flex items-center justify-center transition-all duration-100 ${isRightActive ? 'bg-blue-500/30' : 'hover:bg-white/5'}`}
+                    <div className={`absolute inset-y-0 right-0 w-12 z-30 cursor-pointer flex items-center justify-center transition-all duration-100 ${isRightActive ? 'bg-blue-500/20' : 'hover:bg-transparent'}`}
                         onPointerDown={() => setIsRightActive(true)} onPointerUp={() => { setIsRightActive(false); handleRightClick(); }} onPointerLeave={() => setIsRightActive(false)}>
-                        <ChevronRight size={48} className="text-white drop-shadow-lg opacity-0 hover:opacity-100 transition-opacity" />
+                        <ChevronRight size={48} className="text-white/50 drop-shadow-lg opacity-0 hover:opacity-100 transition-opacity" />
                     </div>
                 </>
             )}
         </div>
 
         {/* Progress bar with bookmark ticks */}
-        <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-800 pointer-events-none group z-40">
-            <div className="h-full bg-primary/40" style={{ width: `${((currentPage + 1) / imageFiles.length) * 100}%` }}></div>
+        <div className={`absolute bottom-0 left-0 right-0 h-1 pointer-events-none group z-40 ${settings.theme === 'light' ? 'bg-zinc-300' : 'bg-zinc-800'}`}>
+            <div className="h-full bg-primary/60" style={{ width: `${((currentPage + 1) / imageFiles.length) * 100}%` }}></div>
             {bookmarks.map(bm => (
                 <div 
                     key={bm.id} 
@@ -474,12 +533,23 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings }) 
             book={book} onBookUpdate={refreshBookData}
             showOcr={showOcr} setShowOcr={setShowOcr}
             ankiSettings={ankiSettings} setAnkiSettings={setAnkiSettings}
-            readerSettings={settings} setReaderSettings={setSettings}
+            readerSettings={effectiveSettings} setReaderSettings={setSettings} // Pass effective settings to display
             bookmarks={bookmarks} onJumpToPage={jumpToPage} onEditBookmark={setEditingBookmark}
             onDeleteBookmark={handleDeleteBookmark}
         />
         {settings.dictionaryMode !== 'popup' && (
-            <DictionaryPanel isOpen={!!dictQuery} query={dictQuery?.text || ''} onClose={() => setDictQuery(null)} ankiSettings={ankiSettings} fullSentence={dictQuery?.context || ""} settings={settings} />
+            <DictionaryPanel 
+                isOpen={!!dictQuery} 
+                query={dictQuery?.text || ''} 
+                fullSentence={dictQuery?.context || ""}
+                images={{ 
+                    original: dictQuery?.imageBase64, 
+                    translated: dictQuery?.translatedImageBase64 
+                }}
+                onClose={() => setDictQuery(null)} 
+                ankiSettings={ankiSettings} 
+                settings={effectiveSettings} // Use effective settings here
+            />
         )}
 
         {editingBookmark && (

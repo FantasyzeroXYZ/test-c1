@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import Bookshelf from './components/Bookshelf';
 import Reader from './components/Reader/Reader';
-import { Book, ViewMode, ReaderSettings } from './types';
+import { Book, ViewMode, ReaderSettings, AnkiSettingsType } from './types';
+import { defaultAnkiSettings } from './services/anki';
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewMode>('bookshelf');
@@ -12,15 +13,20 @@ const App: React.FC = () => {
     const defaults: ReaderSettings = {
       pageViewMode: 'single',
       readingDirection: 'ltr',
+      theme: 'light', // Default to light mode
       language: 'zh', 
       compareMode: false,
       comparisonLayout: 'standard',
+      libraryViewMode: 'grid',
       dictionaryMode: 'panel',
-      dictionaryLanguage: 'en',
+      learningLanguage: 'en', 
       overlayStyle: 'hidden', 
-      useLiveOcr: false, // Default OFF
-      tesseractLanguage: 'eng', // Default English
+      tesseractLanguage: 'eng', 
+      ttsEnabled: true,
       ttsVoiceURI: '',
+      segmentationMethod: 'browser',
+      webSearchEngine: 'google',
+      webSearchMode: 'iframe',
       keybindings: {
           nextPage: ['ArrowRight', ' '],
           prevPage: ['ArrowLeft'],
@@ -32,6 +38,10 @@ const App: React.FC = () => {
     if (saved) {
         try {
             const parsed = JSON.parse(saved);
+            if ('dictionaryLanguage' in parsed) {
+                parsed.learningLanguage = parsed.dictionaryLanguage;
+                delete parsed.dictionaryLanguage;
+            }
             if ('highlightOcr' in parsed) {
                 parsed.overlayStyle = parsed.highlightOcr ? 'fill' : 'hidden';
                 delete parsed.highlightOcr;
@@ -44,8 +54,26 @@ const App: React.FC = () => {
     return defaults;
   });
 
+  // Lift Anki settings to App level for global persistence
+  const [ankiSettings, setAnkiSettings] = useState<AnkiSettingsType>(() => {
+      const saved = localStorage.getItem('ankiSettings');
+      return saved ? JSON.parse(saved) : defaultAnkiSettings;
+  });
+
+  useEffect(() => {
+      localStorage.setItem('ankiSettings', JSON.stringify(ankiSettings));
+  }, [ankiSettings]);
+
   useEffect(() => {
     localStorage.setItem('readerSettings', JSON.stringify(settings));
+    // Apply Theme
+    if (settings.theme === 'dark') {
+        document.documentElement.classList.add('dark');
+        document.documentElement.style.colorScheme = 'dark';
+    } else {
+        document.documentElement.classList.remove('dark');
+        document.documentElement.style.colorScheme = 'light';
+    }
   }, [settings]);
 
   const handleOpenBook = (book: Book) => {
@@ -59,12 +87,14 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="bg-surface text-zinc-100 min-h-screen">
+    <div className={`min-h-screen transition-colors duration-300 ${settings.theme === 'dark' ? 'bg-[#09090b] text-zinc-100' : 'bg-zinc-50 text-zinc-900'}`}>
       {view === 'bookshelf' && (
         <Bookshelf 
           onOpenBook={handleOpenBook} 
           settings={settings} 
           setSettings={setSettings} 
+          ankiSettings={ankiSettings}
+          setAnkiSettings={setAnkiSettings}
         />
       )}
       
@@ -74,6 +104,8 @@ const App: React.FC = () => {
           onExit={handleExitReader} 
           settings={settings}
           setSettings={setSettings}
+          ankiSettings={ankiSettings}
+          setAnkiSettings={setAnkiSettings}
         />
       )}
     </div>

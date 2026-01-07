@@ -85,6 +85,23 @@ export const updateBookBookmarks = async (id: string, bookmarks: Bookmark[]): Pr
     return updateBookField(id, 'bookmarks', bookmarks);
 }
 
+export const updateBookTitle = async (id: string, title: string): Promise<void> => {
+    return updateBookField(id, 'title', title);
+}
+
+export const updateBookCover = async (id: string, coverBlob: Blob | undefined, coverUrl: string): Promise<void> => {
+    await updateBookField(id, 'coverBlob', coverBlob);
+    return updateBookField(id, 'coverUrl', coverUrl);
+}
+
+export const updateBookFile = async (id: string, file: Blob): Promise<void> => {
+    return updateBookField(id, 'file', file);
+}
+
+export const updateBookLanguage = async (id: string, language: string): Promise<void> => {
+    return updateBookField(id, 'language', language);
+}
+
 const updateBookField = async (id: string, field: keyof Book, value: any): Promise<void> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
