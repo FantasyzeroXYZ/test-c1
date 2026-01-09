@@ -1,4 +1,5 @@
 
+
 export interface Bookmark {
   id: string;
   pageIndex: number;
@@ -60,8 +61,11 @@ export type PageViewMode = 'single' | 'double' | 'webtoon';
 export type ReadingDirection = 'ltr' | 'rtl';
 export type DictionaryMode = 'panel' | 'popup';
 export type ThemeMode = 'light' | 'dark';
-// Updated WebSearchEngine types
-export type WebSearchEngine = 'google' | 'bing' | 'duckduckgo' | 'baidu' | 'bing_trans' | 'deepl' | 'baidu_trans' | 'youdao_trans';
+// Updated WebSearchEngine types to include Encyclopedia
+export type WebSearchEngine = 
+  | 'google' | 'bing' | 'duckduckgo' | 'baidu' 
+  | 'bing_trans' | 'deepl' | 'baidu_trans' | 'youdao_trans'
+  | 'baidu_baike' | 'wikipedia' | 'moegirl';
 
 export interface Keybindings {
   nextPage: string[];
@@ -74,7 +78,7 @@ export interface ReaderSettings {
   pageViewMode: PageViewMode;
   readingDirection: ReadingDirection;
   theme: ThemeMode; 
-  language: 'zh' | 'en';
+  language: 'zh' | 'en' | 'zh-Hant';
   compareMode: boolean;
   comparisonLayout: 'standard' | 'swapped';
   libraryViewMode: 'grid' | 'list';

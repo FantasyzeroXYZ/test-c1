@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect } from 'react';
 import { AnkiSettingsType, ReaderSettings, Book, Keybindings, Bookmark, WebSearchEngine } from '../../types';
 import { X, Eye, Book as BookIcon, Monitor, Globe, Layout, ArrowRightLeft, ChevronDown, ChevronRight, Upload, Keyboard, RotateCcw, Download, Mic, Database, Wifi, Tag, Sun, Moon, Edit3, Trash2, Settings, Loader2, Save, Bookmark as BookmarkIcon } from 'lucide-react';
@@ -83,11 +84,17 @@ const Sidebar: React.FC<SidebarProps> = ({
     
     // Search Engine Logic
     const isTrans = ['bing_trans', 'deepl', 'baidu_trans', 'youdao_trans'].includes(readerSettings.webSearchEngine);
-    const [searchCategory, setSearchCategory] = useState<'search' | 'translate'>(isTrans ? 'translate' : 'search');
+    const isEncyclopedia = ['baidu_baike', 'wikipedia', 'moegirl'].includes(readerSettings.webSearchEngine);
+    
+    const [searchCategory, setSearchCategory] = useState<'search' | 'translate' | 'encyclopedia'>(
+        isEncyclopedia ? 'encyclopedia' : isTrans ? 'translate' : 'search'
+    );
 
     useEffect(() => {
-        const isNowTrans = ['bing_trans', 'deepl', 'baidu_trans', 'youdao_trans'].includes(readerSettings.webSearchEngine);
-        setSearchCategory(isNowTrans ? 'translate' : 'search');
+        const engine = readerSettings.webSearchEngine;
+        if (['baidu_baike', 'wikipedia', 'moegirl'].includes(engine)) setSearchCategory('encyclopedia');
+        else if (['bing_trans', 'deepl', 'baidu_trans', 'youdao_trans'].includes(engine)) setSearchCategory('translate');
+        else setSearchCategory('search');
     }, [readerSettings.webSearchEngine]);
 
     useEffect(() => {
@@ -345,9 +352,10 @@ const Sidebar: React.FC<SidebarProps> = ({
                      <div className="space-y-4">
                         <div>
                             <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'language')}</label>
-                            <div className={`flex p-1 rounded-xl ${itemBg}`}>
-                                <button onClick={() => setReaderSettings({...readerSettings, language: 'zh'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.language === 'zh' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>中文</button>
-                                <button onClick={() => setReaderSettings({...readerSettings, language: 'en'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.language === 'en' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>English</button>
+                            <div className={`flex p-1 rounded-xl ${itemBg} gap-1`}>
+                                <button onClick={() => setReaderSettings({...readerSettings, language: 'zh'})} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${readerSettings.language === 'zh' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>簡體</button>
+                                <button onClick={() => setReaderSettings({...readerSettings, language: 'zh-Hant'})} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${readerSettings.language === 'zh-Hant' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>繁體</button>
+                                <button onClick={() => setReaderSettings({...readerSettings, language: 'en'})} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${readerSettings.language === 'en' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>EN</button>
                             </div>
                         </div>
 
@@ -377,16 +385,18 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 <select 
                                     value={searchCategory}
                                     onChange={(e) => {
-                                        const cat = e.target.value as 'search' | 'translate';
+                                        const cat = e.target.value as 'search' | 'translate' | 'encyclopedia';
                                         setSearchCategory(cat);
                                         // Set default when category changes
                                         if (cat === 'search') setReaderSettings({...readerSettings, webSearchEngine: 'google'});
+                                        else if (cat === 'encyclopedia') setReaderSettings({...readerSettings, webSearchEngine: 'wikipedia'});
                                         else setReaderSettings({...readerSettings, webSearchEngine: 'bing_trans'});
                                     }}
                                     className={`w-full rounded-xl px-3 py-2 text-sm outline-none border mb-2 ${inputBg} ${textMain}`}
                                 >
                                     <option value="search">{t(readerSettings.language, 'catSearch')}</option>
                                     <option value="translate">{t(readerSettings.language, 'catTranslate')}</option>
+                                    <option value="encyclopedia">{t(readerSettings.language, 'catEncyclopedia')}</option>
                                 </select>
 
                                 <select 
@@ -400,6 +410,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                                             <option value="bing">Bing</option>
                                             <option value="duckduckgo">DuckDuckGo</option>
                                             <option value="baidu">Baidu</option>
+                                        </>
+                                    ) : searchCategory === 'encyclopedia' ? (
+                                        <>
+                                            <option value="wikipedia">Wikipedia</option>
+                                            <option value="baidu_baike">Baidu Baike</option>
+                                            <option value="moegirl">Moegirl</option>
                                         </>
                                     ) : (
                                         <>

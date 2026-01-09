@@ -8,6 +8,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
+        darkMode: 'class', // Enable class-based dark mode
         theme: {
           extend: {
             colors: {
@@ -30,10 +31,22 @@
           -ms-overflow-style: none;  /* IE and Edge */
           scrollbar-width: none;  /* Firefox */
       }
+      html, body {
+        height: 100%;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden; /* Prevent body scroll */
+      }
+      #root {
+        height: 100%;
+        width: 100%;
+        isolation: isolate; /* Create new stacking context */
+      }
       body {
         background-color: #fafafa; /* zinc-50 */
         color: #18181b; /* zinc-900 */
-        overflow: hidden;
+        -webkit-tap-highlight-color: transparent; /* Remove tap highlight on mobile */
       }
     </style>
   <script type="importmap">

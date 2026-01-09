@@ -1,4 +1,5 @@
 
+
 import React, { useRef, useEffect, useState, memo, useCallback } from 'react';
 import { MokuroBlock, MokuroPage, ReaderSettings, MokuroData } from '../../types';
 import JSZip from 'jszip';
@@ -34,6 +35,16 @@ interface ImageViewerProps {
   isMagnifying?: boolean;
   magnifierLevel?: number;
 }
+
+const getLineSeparator = (lang: string | undefined) => {
+    // CJK languages usually don't use spaces between lines/words in this context
+    const cjk = ['zh', 'zh-Hant', 'ja', 'ko'];
+    if (lang && cjk.includes(lang)) {
+        return '';
+    }
+    // For English and others, add a space to prevent "word\nword" becoming "wordword" or relying on newline rendering
+    return ' ';
+};
 
 const ImageViewer: React.FC<ImageViewerProps> = memo((props) => {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -336,6 +347,7 @@ const WebtoonViewer: React.FC<ImageViewerProps & { containerRef: React.RefObject
                             dictionaryMode={settings.dictionaryMode}
                             overlayStyle={settings.overlayStyle}
                             theme={settings.theme}
+                            learningLanguage={settings.learningLanguage}
                         />
                     )
                 })}
@@ -354,8 +366,9 @@ const LazyWebtoonImage: React.FC<{
     onOcrClick: (text: string, box: MokuroBlock) => void,
     dictionaryMode: 'panel' | 'popup',
     overlayStyle: 'hidden' | 'outline' | 'fill',
-    theme: 'light' | 'dark'
-}> = ({ id, index, zip, filename, ocr, showOcr, onOcrClick, dictionaryMode, overlayStyle, theme }) => {
+    theme: 'light' | 'dark',
+    learningLanguage: string | undefined
+}> = ({ id, index, zip, filename, ocr, showOcr, onOcrClick, dictionaryMode, overlayStyle, theme, learningLanguage }) => {
     const [url, setUrl] = useState<string>('');
     const imgRef = useRef<HTMLDivElement>(null);
     const [isVisible, setIsVisible] = useState(false);
@@ -389,11 +402,13 @@ const LazyWebtoonImage: React.FC<{
         const svgX = x * scaleX;
         const svgY = y * scaleY;
 
+        const sep = getLineSeparator(learningLanguage);
+
         for (const block of ocr.blocks) {
             const [bx1, by1, bx2, by2] = block.box;
             if (svgX >= bx1 && svgX <= bx2 && svgY >= by1 && svgY <= by2) {
                 e.stopPropagation();
-                onOcrClick(block.lines.join('\n'), block);
+                onOcrClick(block.lines.join(sep), block);
                 return;
             }
         }
@@ -464,7 +479,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
 
   const updateDOM = () => {
       if (contentRef.current) {
-          contentRef.current.style.transform = `translate(${transform.current.x}px, ${transform.current.y}px) scale(${transform.current.scale})`;
+          contentRef.current.style.transform = `translate3d(${transform.current.x}px, ${transform.current.y}px, 0) scale(${transform.current.scale})`;
       }
   };
 
@@ -475,7 +490,10 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
   const pointers = useRef<Map<number, React.PointerEvent>>(new Map());
 
   const onPointerDown = (e: React.PointerEvent) => {
+      // Allow button clicks to pass through, but capture everything else on the layer
       if ((e.target as HTMLElement).closest('button')) return;
+      
+      e.preventDefault(); // Important: Prevent default browser behavior (scrolling/selection)
       
       containerRef.current?.setPointerCapture(e.pointerId);
       pointers.current.set(e.pointerId, e);
@@ -495,7 +513,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
   const onPointerMove = (e: React.PointerEvent) => {
       if (!pointers.current.has(e.pointerId)) return;
       pointers.current.set(e.pointerId, e); 
-      e.preventDefault();
+      e.preventDefault(); // Stop native scrolling on non-iOS
 
       if (pointers.current.size === 2 && initialDist.current) {
           // Pinch Zoom
@@ -551,6 +569,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
               }
           }
       } else if (pointers.current.size === 1) {
+          // If one finger remains, resume dragging from current position
           const p = pointers.current.values().next().value;
           lastPos.current = { x: p.clientX, y: p.clientY };
           isDragging.current = true;
@@ -582,10 +601,12 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
                    const svgX = x * scaleX;
                    const svgY = y * scaleY;
 
+                   const sep = getLineSeparator(settings.learningLanguage);
+
                    for (const block of page.ocr.blocks) {
                        const [bx1, by1, bx2, by2] = block.box;
                        if (svgX >= bx1 && svgX <= bx2 && svgY >= by1 && svgY <= by2) {
-                           onOcrClick(block.lines.join('\n'), block);
+                           onOcrClick(block.lines.join(sep), block);
                            return; 
                        }
                    }
@@ -628,7 +649,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
       <div 
         ref={contentRef}
         className={`relative flex items-center justify-center gap-2 ${readingDirection === 'rtl' ? 'flex-row-reverse' : 'flex-row'}`}
-        style={{ transformOrigin: 'center' }}
+        style={{ transformOrigin: 'center', willChange: 'transform' }} 
       >
         {displayPages.map((page, index) => (
             <div key={index} className="relative group">

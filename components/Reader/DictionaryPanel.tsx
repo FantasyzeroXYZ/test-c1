@@ -1,6 +1,7 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
-import { AnkiSettingsType, ReaderSettings } from '../../types';
+import { AnkiSettingsType, ReaderSettings, WebSearchEngine } from '../../types';
 import { Search, Plus, Loader2, BookOpen, X, ArrowRight, Volume2, ExternalLink, PenTool, Globe, Puzzle, Pin, PlayCircle, Save, Image as ImageIcon, Maximize, AppWindow, ArrowLeft, RotateCw } from 'lucide-react';
 import { translations, t as trans } from '../../services/i18n';
 import { addNote } from '../../services/anki';
@@ -89,6 +90,20 @@ const DictionaryPanel: React.FC<Props> = ({
   
   // Ref for iframe to implement refresh/back
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Theming Helpers
+  const isLight = settings.theme === 'light';
+  const colors = {
+      bg: isLight ? 'bg-white' : 'bg-surface',
+      bgSub: isLight ? 'bg-zinc-50' : 'bg-black/20',
+      border: isLight ? 'border-zinc-200' : 'border-white/10',
+      textMain: isLight ? 'text-zinc-800' : 'text-zinc-100',
+      textSub: isLight ? 'text-zinc-500' : 'text-slate-400',
+      inputBg: isLight ? 'bg-zinc-100' : 'bg-black/40',
+      placeholder: isLight ? 'placeholder:text-zinc-400' : 'placeholder:text-slate-500',
+      activeTab: isLight ? 'border-primary text-zinc-800 bg-zinc-100' : 'border-primary text-white bg-white/5',
+      inactiveTab: isLight ? 'border-transparent text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-white/5'
+  };
 
   useEffect(() => {
       isMountedRef.current = true;
@@ -184,7 +199,7 @@ const DictionaryPanel: React.FC<Props> = ({
       const timeoutId = window.setTimeout(() => {
           if (isMountedRef.current && currentRequestId.current === requestId) {
               setScriptLoading(false);
-              setScriptHtml(`<div class="text-slate-500 text-center p-4 text-xs"><p>No script response.</p><p class="mt-2 opacity-75 text-[10px]">Ensure userscript is installed.</p></div>`);
+              setScriptHtml(`<div class="${colors.textSub} text-center p-4 text-xs"><p>No script response.</p><p class="mt-2 opacity-75 text-[10px]">Ensure userscript is installed.</p></div>`);
               scriptTimeoutRef.current = null;
           }
       }, 5000);
@@ -197,10 +212,9 @@ const DictionaryPanel: React.FC<Props> = ({
     setError('');
     setData(null);
     try {
-      // Fix: Free Dictionary API uses standard ISO codes (mostly 2-letter, some 3)
-      // en, hi, es, fr, ja, ru, de, it, ko, pt-br, ar, tr
+      // Free Dictionary API uses standard ISO codes
       let apiLang: string = learningLanguage;
-      if (apiLang === 'pt') apiLang = 'pt-BR'; // Fix Portuguese
+      if (apiLang === 'pt') apiLang = 'pt-BR';
       
       const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/${apiLang}/${term}`);
       if (!res.ok) throw new Error('Not found');
@@ -260,16 +274,16 @@ const DictionaryPanel: React.FC<Props> = ({
 
   const playAudio = (url: string) => { new Audio(url).play().catch(e => console.error(e)); };
 
-  const playTTS = () => {
+  const playTTS = (textToSpeak: string = sentence) => {
       if (!settings.ttsEnabled) return;
-      if (!sentence) return;
+      if (!textToSpeak) return;
       if (settings.ttsVoiceURI) {
-          const utt = new SpeechSynthesisUtterance(sentence);
+          const utt = new SpeechSynthesisUtterance(textToSpeak);
           const voice = window.speechSynthesis.getVoices().find(v => v.voiceURI === settings.ttsVoiceURI);
           if (voice) utt.voice = voice;
           window.speechSynthesis.speak(utt);
       } else {
-          const utt = new SpeechSynthesisUtterance(sentence);
+          const utt = new SpeechSynthesisUtterance(textToSpeak);
           window.speechSynthesis.speak(utt);
       }
   };
@@ -277,18 +291,39 @@ const DictionaryPanel: React.FC<Props> = ({
   const getSearchUrl = (term: string) => {
       const encoded = encodeURIComponent(term);
       const engine = settings.webSearchEngine || 'google';
-      // Use interface language for target translation language
-      const targetLang = settings.language === 'zh' ? 'zh' : 'en'; 
-      
+      // UI language (zh/en) determines target
+      const targetLang = settings.language === 'zh' || settings.language === 'zh-Hant' ? 'zh-TW' : 'en'; 
+      // Book/Learning language determines source
+      const sourceLang = (settings.learningLanguage || 'auto') as string; 
+
+      // Map our internal codes to engine specific codes if needed
+      const getSourceCode = (engine: WebSearchEngine) => {
+          if (sourceLang === 'auto') return 'auto';
+          switch(engine) {
+              case 'bing_trans': return sourceLang === 'zh' ? 'zh-Hans' : sourceLang === 'zh-Hant' ? 'zh-Hant' : sourceLang;
+              case 'deepl': return sourceLang === 'zh' ? 'ZH' : sourceLang === 'ja' ? 'JA' : sourceLang.toUpperCase();
+              case 'google': return sourceLang === 'zh' ? 'zh-CN' : sourceLang === 'zh-Hant' ? 'zh-TW' : sourceLang;
+              default: return sourceLang;
+          }
+      };
+
+      const srcCode = getSourceCode(engine);
+
       switch (engine) {
+          // --- Search ---
           case 'bing': return `https://www.bing.com/search?q=${encoded}`;
           case 'duckduckgo': return `https://duckduckgo.com/?q=${encoded}`;
           case 'baidu': return `https://www.baidu.com/s?wd=${encoded}`;
           
-          // Translators
-          case 'bing_trans': return `https://www.bing.com/translator?text=${encoded}&to=${targetLang === 'zh' ? 'zh-Hans' : 'en'}`;
-          case 'deepl': return `https://www.deepl.com/translator#auto/${targetLang === 'zh' ? 'zh' : 'en-US'}/${encoded}`;
-          case 'baidu_trans': return `https://fanyi.baidu.com/#auto/${targetLang}/${encoded}`;
+          // --- Encyclopedia ---
+          case 'wikipedia': return `https://${sourceLang === 'zh' ? 'zh' : sourceLang}.wikipedia.org/wiki/${encoded}`;
+          case 'baidu_baike': return `https://baike.baidu.com/item/${encoded}`;
+          case 'moegirl': return `https://zh.moegirl.org.cn/${encoded}`;
+
+          // --- Translators ---
+          case 'bing_trans': return `https://www.bing.com/translator?text=${encoded}&from=${srcCode}&to=${targetLang}`;
+          case 'deepl': return `https://www.deepl.com/translator#${srcCode}/${targetLang}/${encoded}`;
+          case 'baidu_trans': return `https://fanyi.baidu.com/#${srcCode}/${targetLang}/${encoded}`;
           case 'youdao_trans': return `https://www.youdao.com/w/${encoded}`;
           
           case 'google': default: return `https://www.google.com/search?igu=1&q=${encoded}`;
@@ -355,8 +390,8 @@ const DictionaryPanel: React.FC<Props> = ({
 
   const searchUrl = getSearchUrl(searchTerm);
 
-  const containerClasses = `fixed z-[200] transition-transform duration-300 shadow-2xl bg-surface border-white/10 flex flex-col 
-    md:inset-y-0 md:right-0 md:w-[400px] md:border-l md:rounded-l-2xl
+  const containerClasses = `fixed z-[200] transition-transform duration-300 shadow-2xl ${colors.bg} border-l ${colors.border} flex flex-col 
+    md:inset-y-0 md:right-0 md:w-[400px] md:rounded-l-2xl
     max-md:inset-x-0 max-md:bottom-0 max-md:h-[80dvh] max-md:rounded-t-2xl max-md:border-t
     ${isOpen 
         ? 'md:translate-x-0 max-md:translate-y-0 opacity-100 pointer-events-auto' 
@@ -371,34 +406,34 @@ const DictionaryPanel: React.FC<Props> = ({
     <>
       {(!isPinned) && <div className={overlayClasses} onClick={onClose} />}
       <div key={isOpen ? "open" : "closed"} className={containerClasses}>
-        <div className="p-4 border-b border-white/10 flex flex-col gap-3 shrink-0 bg-gradient-to-b from-white/5 to-transparent">
+        <div className={`p-4 border-b ${colors.border} flex flex-col gap-3 shrink-0 ${colors.bgSub}`}>
             <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-slate-200 flex items-center gap-2"><BookOpen size={18} className="text-primary" /> {t.dictionaryMode}</h3>
+                <h3 className={`font-semibold flex items-center gap-2 ${colors.textMain}`}><BookOpen size={18} className="text-primary" /> {t.dictionaryMode}</h3>
                 <div className="flex items-center gap-1">
-                    <button onClick={() => setIsPinned(!isPinned)} className={`p-2 rounded-full transition-colors ${isPinned ? 'text-primary bg-white/10' : 'text-slate-400 hover:text-white hover:bg-white/10'}`} title={isPinned ? "Unpin" : "Pin"}>{isPinned ? <Pin size={18} className="fill-current" /> : <Pin size={18} />}</button>
-                    <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors text-slate-400 hover:text-white"><X size={20} /></button>
+                    <button onClick={() => setIsPinned(!isPinned)} className={`p-2 rounded-full transition-colors ${isPinned ? 'text-primary bg-primary/10' : `${colors.textSub} hover:${colors.textMain} hover:bg-black/5`}`} title={isPinned ? "Unpin" : "Pin"}>{isPinned ? <Pin size={18} className="fill-current" /> : <Pin size={18} />}</button>
+                    <button onClick={onClose} className={`p-2 hover:bg-black/5 rounded-full transition-colors ${colors.textSub} hover:${colors.textMain}`}><X size={20} /></button>
                 </div>
             </div>
             <div className="flex items-center gap-2">
                 <div className="relative group flex-1">
                    <input 
                       value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                      className="w-full bg-black/40 border border-white/10 group-hover:border-white/20 rounded-xl pl-4 pr-28 py-2.5 text-sm text-white focus:border-primary outline-none placeholder:text-slate-500 transition-all"
+                      className={`w-full border rounded-xl pl-4 pr-28 py-2.5 text-sm focus:border-primary outline-none transition-all ${colors.inputBg} ${colors.border} ${colors.textMain} ${colors.placeholder}`}
                       placeholder={t.searchDict}
                    />
                    <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1">
                       <button 
                           onClick={handleAppendWord}
-                          className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                          className={`${colors.textSub} hover:${colors.textMain} p-1.5 rounded-lg hover:bg-black/5 transition-colors`}
                           title={t.appendWord}
                       >
                           <Plus size={18} />
                       </button>
-                      <button onClick={() => handleSearch()} className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors"><Search size={18} /></button>
+                      <button onClick={() => handleSearch()} className={`${colors.textSub} hover:${colors.textMain} p-1.5 rounded-lg hover:bg-black/5 transition-colors`}><Search size={18} /></button>
                       <button 
                           onClick={handleAnkiClick}
                           disabled={isAddingToAnki || !searchTerm}
-                          className="text-primary-300 hover:text-primary hover:bg-white/10 p-1.5 rounded-lg transition-colors disabled:opacity-50"
+                          className="text-primary hover:text-blue-600 hover:bg-blue-50 p-1.5 rounded-lg transition-colors disabled:opacity-50"
                           title={t.addToAnki}
                       >
                           {isAddingToAnki ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />}
@@ -409,84 +444,96 @@ const DictionaryPanel: React.FC<Props> = ({
         </div>
         
         {sentence && (
-        <div className="bg-black/20 border-y border-white/5 p-3 shrink-0 flex gap-2 items-start">
-             <div className="flex-1 text-sm leading-relaxed text-slate-200 overflow-y-auto max-h-[15dvh]">
+        <div className={`${colors.bgSub} border-y ${colors.border} p-3 shrink-0 flex gap-2 items-start`}>
+             <div className={`flex-1 text-sm leading-relaxed ${colors.textMain} overflow-y-auto max-h-[15dvh]`}>
                   <div className={`flex flex-wrap ${gapClass}`}>
                       {segments.map((item, i) => {
                           if (!item.isWordLike) return <span key={i} className="whitespace-pre opacity-70">{item.segment}</span>;
-                          return ( <span key={i} className="cursor-pointer hover:text-primary hover:bg-white/10 rounded px-0 transition-colors" onClick={() => handleSearch(item.segment.trim())}>{item.segment}</span> );
+                          return ( <span key={i} className="cursor-pointer hover:text-primary hover:bg-primary/5 rounded px-0 transition-colors" onClick={() => handleSearch(item.segment.trim())}>{item.segment}</span> );
                       })}
                   </div>
              </div>
              <div className="flex flex-col gap-1">
                 {settings.ttsEnabled && (
-                    <button onClick={playTTS} className="p-1 text-slate-400 hover:text-primary hover:bg-white/5 rounded-full transition-colors" title={t.tts}>
+                    <button onClick={() => playTTS(sentence)} className={`p-1 ${colors.textSub} hover:text-primary hover:bg-black/5 rounded-full transition-colors`} title={t.tts}>
                         <PlayCircle size={18} />
                     </button>
                 )}
-                <button onClick={() => handleSearch(sentence)} className="p-1 text-slate-400 hover:text-primary hover:bg-white/5 rounded-full transition-colors" title={t.searchWholeSentence}>
+                <button onClick={() => handleSearch(sentence)} className={`p-1 ${colors.textSub} hover:text-primary hover:bg-black/5 rounded-full transition-colors`} title={t.searchWholeSentence}>
                     <Search size={18} />
                 </button>
              </div>
         </div>
         )}
 
-        <div className="flex border-b border-white/10 shrink-0 bg-black/20">
-             <button onClick={() => handleTabChange('dict')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2 flex items-center justify-center gap-2 ${activeTab === 'dict' ? 'border-primary text-white bg-white/5' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-white/5'}`}><BookOpen size={14}/> {t.dictionaryTab}</button>
-             <button onClick={() => handleTabChange('script')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2 flex items-center justify-center gap-2 ${activeTab === 'script' ? 'border-primary text-white bg-white/5' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-white/5'}`}><Puzzle size={14}/> {t.tampermonkeyTab}</button>
-             <button onClick={() => handleTabChange('web')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2 flex items-center justify-center gap-2 ${activeTab === 'web' ? 'border-primary text-white bg-white/5' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-white/5'}`}><Globe size={14}/> {t.webTab}</button>
+        <div className={`flex border-b ${colors.border} shrink-0 ${colors.bgSub}`}>
+             <button onClick={() => handleTabChange('dict')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2 flex items-center justify-center gap-2 ${activeTab === 'dict' ? colors.activeTab : colors.inactiveTab}`}><BookOpen size={14}/> {t.dictionaryTab}</button>
+             <button onClick={() => handleTabChange('script')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2 flex items-center justify-center gap-2 ${activeTab === 'script' ? colors.activeTab : colors.inactiveTab}`}><Puzzle size={14}/> {t.tampermonkeyTab}</button>
+             <button onClick={() => handleTabChange('web')} className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider transition-all border-b-2 flex items-center justify-center gap-2 ${activeTab === 'web' ? colors.activeTab : colors.inactiveTab}`}><Globe size={14}/> {t.webTab}</button>
         </div>
-        <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent bg-surface">
+        <div className={`flex-1 overflow-y-auto overflow-x-hidden flex flex-col scrollbar-thin ${colors.bg}`}>
             {activeTab === 'dict' && (
                 <div className="space-y-6 p-5 pb-8">
-                    {loading ? ( <div className="flex flex-col items-center justify-center py-20 gap-3 text-slate-500"><Loader2 className="animate-spin text-primary" size={32} /><span className="text-xs font-medium uppercase tracking-widest">{t.loading}</span></div> ) 
-                    : error ? ( <div className="text-center py-20 px-6"><div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-500"><Search size={32} /></div><p className="text-slate-300 mb-2 font-medium">{error}</p></div> ) 
+                    {loading ? ( <div className={`flex flex-col items-center justify-center py-20 gap-3 ${colors.textSub}`}><Loader2 className="animate-spin text-primary" size={32} /><span className="text-xs font-medium uppercase tracking-widest">{t.loading}</span></div> ) 
+                    : error ? ( <div className="text-center py-20 px-6"><div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${colors.bgSub} ${colors.textSub}`}><Search size={32} /></div><p className={`${colors.textMain} mb-2 font-medium`}>{error}</p></div> ) 
                     : data ? (
                         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            <div className="flex items-baseline justify-between mb-4 pb-4 border-b border-white/5">
-                                <div><h2 className="text-3xl font-bold text-white mb-1 tracking-tight">{data.word}</h2>{data.entries[0]?.phonetic && <span className="text-primary/80 font-mono text-sm">[{data.entries[0].phonetic}]</span>}</div>
-                                {data.entries[0]?.pronunciations?.[0]?.audio && ( <button onClick={() => playAudio(data.entries[0].pronunciations![0].audio!)} className="p-3 bg-white/5 rounded-full hover:bg-primary hover:text-white transition-all text-slate-300 shadow-lg border border-white/5"><Volume2 size={20} /></button> )}
+                            <div className={`flex items-baseline justify-between mb-4 pb-4 border-b ${colors.border}`}>
+                                <div className="flex items-center gap-3">
+                                    <h2 className={`text-3xl font-bold ${colors.textMain} mb-1 tracking-tight`}>{data.word}</h2>
+                                    {data.entries[0]?.phonetic && <span className="text-primary font-mono text-sm">[{data.entries[0].phonetic}]</span>}
+                                    {settings.ttsEnabled && (
+                                        <button onClick={() => playTTS(data.word)} className={`p-1.5 rounded-full hover:bg-primary/10 text-primary transition-colors`} title="Pronounce">
+                                            <Volume2 size={18} />
+                                        </button>
+                                    )}
+                                </div>
+                                {data.entries[0]?.pronunciations?.[0]?.audio && ( <button onClick={() => playAudio(data.entries[0].pronunciations![0].audio!)} className={`p-3 rounded-full hover:bg-primary hover:text-white transition-all shadow-lg border ${colors.bgSub} ${colors.textSub} ${colors.border}`}><Volume2 size={20} /></button> )}
                             </div>
                             {data.entries.map((entry, i) => (
-                                <div key={i} className="mb-8 last:mb-0"><span className="inline-block px-2.5 py-0.5 bg-primary/20 text-primary-200 border border-primary/20 text-[10px] font-bold uppercase rounded-md mb-3 tracking-wide">{entry.partOfSpeech}</span><div className="space-y-4">{entry.senses?.map((sense, j) => ( <div key={j} className="text-sm text-slate-300 pl-4 border-l-2 border-white/10 relative"><p className="leading-relaxed">{sense.definition}</p>{sense.examples?.[0] && ( <p className="text-xs text-slate-500 mt-1.5 italic font-medium">"{sense.examples[0]}"</p> )}</div> ))}</div></div>
+                                <div key={i} className="mb-8 last:mb-0"><span className="inline-block px-2.5 py-0.5 bg-primary/10 text-primary border border-primary/20 text-[10px] font-bold uppercase rounded-md mb-3 tracking-wide">{entry.partOfSpeech}</span><div className="space-y-4">{entry.senses?.map((sense, j) => ( <div key={j} className={`text-sm ${colors.textMain} pl-4 border-l-2 ${colors.border} relative`}><p className="leading-relaxed">{sense.definition}</p>{sense.examples?.[0] && ( <p className={`text-xs ${colors.textSub} mt-1.5 italic font-medium`}>"{sense.examples[0]}"</p> )}</div> ))}</div></div>
                             ))}
                         </div>
-                    ) : ( <div className="flex flex-col items-center justify-center h-full text-slate-500 opacity-50 pb-20"><BookOpen size={48} strokeWidth={1} /><p className="text-sm mt-4">{t.searchDict}</p></div> )}
+                    ) : ( <div className={`flex flex-col items-center justify-center h-full ${colors.textSub} opacity-50 pb-20`}><BookOpen size={48} strokeWidth={1} /><p className="text-sm mt-4">{t.searchDict}</p></div> )}
                 </div>
             )}
-            {activeTab === 'script' && ( <div className="w-full h-full flex flex-col p-4 bg-[#0f172a] text-slate-200">{scriptLoading ? ( <div className="flex flex-col items-center justify-center py-20 gap-3 text-slate-500"><Loader2 className="animate-spin text-primary" size={32} /><span className="text-xs font-medium uppercase tracking-widest">{t.tampermonkeyInfo}</span></div> ) : scriptHtml ? ( <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col"><div ref={scriptContainerRef} className="prose prose-invert prose-sm max-w-none text-slate-200 overflow-x-hidden" dangerouslySetInnerHTML={{ __html: scriptHtml }} /></div> ) : ( <div className="flex flex-col items-center justify-center h-full text-slate-500 opacity-50 pb-20 text-center px-4"><Puzzle size={48} strokeWidth={1} /><p className="text-sm mt-4 font-bold">{t.tampermonkeyTab}</p></div> )}</div> )}
+            {activeTab === 'script' && ( <div className={`w-full h-full flex flex-col p-4 ${colors.textMain}`}>{scriptLoading ? ( <div className={`flex flex-col items-center justify-center py-20 gap-3 ${colors.textSub}`}><Loader2 className="animate-spin text-primary" size={32} /><span className="text-xs font-medium uppercase tracking-widest">{t.tampermonkeyInfo}</span></div> ) : scriptHtml ? ( <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col"><div ref={scriptContainerRef} className={`prose prose-sm max-w-none ${colors.textMain} overflow-x-hidden`} dangerouslySetInnerHTML={{ __html: scriptHtml }} /></div> ) : ( <div className={`flex flex-col items-center justify-center h-full ${colors.textSub} opacity-50 pb-20 text-center px-4`}><Puzzle size={48} strokeWidth={1} /><p className="text-sm mt-4 font-bold">{t.tampermonkeyTab}</p></div> )}</div> )}
             {activeTab === 'web' && ( 
-              <div className="w-full h-full flex flex-col bg-white relative">
-                <div className="p-2 border-b bg-slate-50 flex items-center justify-between px-4">
-                    <span className="text-xs font-bold text-slate-500 uppercase">{t.webTab}</span>
+              <div className={`w-full h-full flex flex-col ${colors.bg} relative`}>
+                <div className={`p-2 border-b ${colors.bgSub} flex items-center justify-between px-4`}>
+                    <span className={`text-xs font-bold ${colors.textSub} uppercase`}>{t.webTab}</span>
                     <div className="flex items-center gap-3">
                         <div className="flex items-center gap-1">
-                            <button onClick={handleWebBack} className="p-1.5 rounded hover:bg-slate-200 text-slate-600" title="Back"><ArrowLeft size={14}/></button>
-                            <button onClick={handleWebForward} className="p-1.5 rounded hover:bg-slate-200 text-slate-600" title="Forward"><ArrowRight size={14}/></button>
-                            <button onClick={handleWebReload} className="p-1.5 rounded hover:bg-slate-200 text-slate-600" title="Refresh"><RotateCw size={14}/></button>
+                            <button onClick={handleWebBack} className={`p-1.5 rounded hover:bg-black/10 ${colors.textSub}`} title="Back"><ArrowLeft size={14}/></button>
+                            <button onClick={handleWebForward} className={`p-1.5 rounded hover:bg-black/10 ${colors.textSub}`} title="Forward"><ArrowRight size={14}/></button>
+                            <button onClick={handleWebReload} className={`p-1.5 rounded hover:bg-black/10 ${colors.textSub}`} title="Refresh"><RotateCw size={14}/></button>
                         </div>
-                        <div className="h-4 w-px bg-slate-300"></div>
-                        <button onClick={toggleWebMode} className="flex items-center gap-1.5 px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-[10px] font-bold text-slate-600 transition-colors uppercase">
+                        <div className="h-4 w-px bg-zinc-300 dark:bg-zinc-700"></div>
+                        <button onClick={toggleWebMode} className={`flex items-center gap-1.5 px-2 py-1 rounded bg-black/5 hover:bg-black/10 text-[10px] font-bold ${colors.textSub} transition-colors uppercase`}>
                             {webMode === 'iframe' ? <AppWindow size={12}/> : <ExternalLink size={12}/>}
                             {webMode === 'iframe' ? trans(lang, 'openInIframe') : trans(lang, 'openExternal')}
                         </button>
                     </div>
                 </div>
                 
-                {/* 
-                  Internal Mode: Block popups to force links to try to stay in frame (though XFO might block).
-                  External Mode: Allow popups so clicks open new windows.
-                */}
-                <iframe 
-                    ref={iframeRef}
-                    src={searchUrl} 
-                    className="w-full flex-1 border-0" 
-                    sandbox={webMode === 'external' 
-                        ? "allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox" 
-                        : "allow-forms allow-scripts allow-same-origin"}
-                />
+                {searchTerm ? (
+                    <iframe 
+                        key={searchUrl}
+                        ref={iframeRef}
+                        src={searchUrl} 
+                        className="w-full flex-1 border-0" 
+                        sandbox={webMode === 'external' 
+                            ? "allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox" 
+                            : "allow-forms allow-scripts allow-same-origin"}
+                    />
+                ) : (
+                    <div className={`flex flex-col items-center justify-center flex-1 ${colors.textSub} opacity-50`}>
+                        <Globe size={48} strokeWidth={1} />
+                        <p className="text-sm mt-4">{t.searchDict}</p>
+                    </div>
+                )}
                 
-                {webMode === 'external' && (
+                {webMode === 'external' && searchTerm && (
                     <div className="absolute top-12 right-4 z-10 pointer-events-none">
                         <div className="bg-black/70 text-white text-[10px] px-2 py-1 rounded backdrop-blur-sm shadow-lg pointer-events-auto flex items-center gap-2">
                              Popups Enabled <ExternalLink size={10}/>
@@ -495,23 +542,23 @@ const DictionaryPanel: React.FC<Props> = ({
                     </div>
                 )}
                 
-                <div className="space-y-2 mt-auto border-t border-slate-200 bg-slate-50 p-4 shrink-0">
+                <div className={`space-y-2 mt-auto border-t ${colors.border} ${colors.bgSub} p-4 shrink-0`}>
                   <div className="flex justify-between items-center">
-                      <h4 className="text-xs font-bold text-slate-600 uppercase flex items-center gap-2"><PenTool size={12}/> {t.customTab}</h4>
+                      <h4 className={`text-xs font-bold ${colors.textSub} uppercase flex items-center gap-2`}><PenTool size={12}/> {t.customTab}</h4>
                       <div className="flex gap-2">
-                          <label className="p-1.5 bg-slate-200 hover:bg-slate-300 rounded cursor-pointer transition-colors text-slate-600" title={t.uploadImage}>
+                          <label className={`p-1.5 rounded cursor-pointer transition-colors ${colors.textSub} hover:bg-black/10`} title={t.uploadImage}>
                               <ImageIcon size={14}/>
                               <input type="file" accept="image/*" className="hidden" onChange={handleCustomImageUpload} />
                           </label>
                           {customImage && (
-                              <div className="relative w-6 h-6 border border-slate-300 rounded overflow-hidden group">
+                              <div className={`relative w-6 h-6 border ${colors.border} rounded overflow-hidden group`}>
                                   <img src={customImage} className="w-full h-full object-cover" />
                                   <button onClick={() => setCustomImage(null)} className="absolute inset-0 bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100"><X size={10}/></button>
                               </div>
                           )}
                       </div>
                   </div>
-                  <textarea className="w-full bg-white border border-slate-300 rounded-lg p-2 text-sm text-slate-800 focus:border-primary outline-none transition-all placeholder:text-slate-400 h-16 resize-none" placeholder={t.customDefPlaceholder} value={customDef} onChange={(e) => setCustomDef(e.target.value)}></textarea>
+                  <textarea className={`w-full ${colors.bg} border ${colors.border} rounded-lg p-2 text-sm ${colors.textMain} focus:border-primary outline-none transition-all ${colors.placeholder} h-16 resize-none`} placeholder={t.customDefPlaceholder} value={customDef} onChange={(e) => setCustomDef(e.target.value)}></textarea>
                 </div>
               </div> 
             )}
