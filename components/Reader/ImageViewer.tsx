@@ -98,12 +98,6 @@ const MagnifierOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement 
         if (pos) updateLensData(pos.x, pos.y);
     }, [pos]);
 
-    // Only allow drag if starting on the lens itself
-    const handlePointerDown = (e: React.PointerEvent) => {
-        // We only care if the user clicked ON the lens, which is handled by the lens component
-        // But since lens is child, we can handle global move here if drag started
-    };
-
     const handlePointerMove = (e: React.PointerEvent) => {
         if (isDragging.current) {
             e.preventDefault();
@@ -114,7 +108,6 @@ const MagnifierOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement 
     const handlePointerUp = (e: React.PointerEvent) => {
         if (isDragging.current) {
             isDragging.current = false;
-            // (e.target as HTMLElement).releasePointerCapture(e.pointerId); // Managed by lens
         }
     };
 
@@ -344,10 +337,8 @@ const WebtoonViewer: React.FC<ImageViewerProps & { containerRef: React.RefObject
                             ocr={pageOcr || null}
                             showOcr={showOcr}
                             onOcrClick={onOcrClick}
-                            dictionaryMode={settings.dictionaryMode}
-                            overlayStyle={settings.overlayStyle}
+                            settings={settings}
                             theme={settings.theme}
-                            learningLanguage={settings.learningLanguage}
                         />
                     )
                 })}
@@ -364,14 +355,13 @@ const LazyWebtoonImage: React.FC<{
     ocr: MokuroPage | null,
     showOcr: boolean,
     onOcrClick: (text: string, box: MokuroBlock) => void,
-    dictionaryMode: 'panel' | 'popup',
-    overlayStyle: 'hidden' | 'outline' | 'fill',
+    settings: ReaderSettings,
     theme: 'light' | 'dark',
-    learningLanguage: string | undefined
-}> = ({ id, index, zip, filename, ocr, showOcr, onOcrClick, dictionaryMode, overlayStyle, theme, learningLanguage }) => {
+}> = ({ id, index, zip, filename, ocr, showOcr, onOcrClick, settings, theme }) => {
     const [url, setUrl] = useState<string>('');
     const imgRef = useRef<HTMLDivElement>(null);
     const [isVisible, setIsVisible] = useState(false);
+    const [imgDim, setImgDim] = useState<{w: number, h: number} | null>(null);
 
     useEffect(() => {
         const observer = new IntersectionObserver(([entry]) => {
@@ -387,12 +377,17 @@ const LazyWebtoonImage: React.FC<{
         }
     }, [isVisible, zip, filename, url]);
 
-    const handlePointerUp = (e: React.PointerEvent) => {
-        if (!showOcr) return; // Prevent OCR if disabled
+    // Handle Panel Click Mode Logic
+    const handlePanelClick = (e: React.PointerEvent) => {
+        if (settings.dictionaryMode === 'popup') return;
+        if (!showOcr) return;
         if (!ocr || !imgRef.current) return;
+        
         const img = imgRef.current.querySelector('img');
         if (!img) return;
         const rect = img.getBoundingClientRect();
+        
+        // Basic bounds check
         if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
 
         const x = e.clientX - rect.left;
@@ -402,7 +397,7 @@ const LazyWebtoonImage: React.FC<{
         const svgX = x * scaleX;
         const svgY = y * scaleY;
 
-        const sep = getLineSeparator(learningLanguage);
+        const sep = getLineSeparator(settings.learningLanguage);
 
         for (const block of ocr.blocks) {
             const [bx1, by1, bx2, by2] = block.box;
@@ -418,20 +413,36 @@ const LazyWebtoonImage: React.FC<{
         <div 
             id={id} ref={imgRef} 
             className={`w-full relative min-h-[100px] flex items-center justify-center border-b ${theme === 'light' ? 'bg-zinc-100 border-zinc-200' : 'bg-zinc-950 border-zinc-900'}`}
-            onPointerUp={handlePointerUp}
+            onPointerUp={handlePanelClick}
         >
             {url ? (
                 <div className="relative w-full">
-                    <img src={url} alt={`Page ${index}`} className="w-full h-auto block select-none pointer-events-none" />
-                    {ocr && showOcr && (
+                    <img 
+                        src={url} 
+                        alt={`Page ${index}`} 
+                        className="w-full h-auto block select-none pointer-events-none" 
+                        onLoad={(e) => setImgDim({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+                    />
+                    
+                    {/* Render HTML Overlay for Popup Mode */}
+                    {ocr && showOcr && imgDim && settings.dictionaryMode === 'popup' && (
+                        <TextOverlayLayer 
+                            ocrData={ocr}
+                            naturalWidth={imgDim.w}
+                            naturalHeight={imgDim.h}
+                            learningLanguage={settings.learningLanguage}
+                            onOcrClick={onOcrClick}
+                        />
+                    )}
+
+                    {/* Render SVG Overlay for Panel Mode (Visuals only, clicks handled by parent for simpler event delegation in webtoon mode, OR overlay itself in pagination) */}
+                    {ocr && showOcr && settings.dictionaryMode === 'panel' && (
                         <div className="absolute inset-0 pointer-events-none">
-                            <svg className="w-full h-full" preserveAspectRatio="none">
+                            <svg className="w-full h-full" viewBox={`0 0 ${imgDim.w} ${imgDim.h}`}>
                                 <ImageOverlay 
                                     ocrData={ocr} 
-                                    overlayStyle={overlayStyle}
-                                    onOcrClick={() => {}} 
-                                    dictionaryMode={dictionaryMode}
-                                    pageIndex={index}
+                                    overlayStyle={settings.overlayStyle}
+                                    onOcrClick={() => {}} // Handled by parent container in webtoon mode for better scroll perf
                                     allowInteraction={false}
                                 />
                             </svg>
@@ -490,10 +501,18 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
   const pointers = useRef<Map<number, React.PointerEvent>>(new Map());
 
   const onPointerDown = (e: React.PointerEvent) => {
-      // Allow button clicks to pass through, but capture everything else on the layer
+      // Allow button clicks to pass through
       if ((e.target as HTMLElement).closest('button')) return;
       
-      e.preventDefault(); // Important: Prevent default browser behavior (scrolling/selection)
+      // Allow interacting with the text-box (Popup mode)
+      if ((e.target as HTMLElement).closest('.text-box')) {
+          // If we are in popup mode, we want to allow selection, but maybe block dragging?
+          // For now, let default behavior happen for text selection, but stop propagation to drag handler
+          e.stopPropagation(); 
+          return;
+      }
+      
+      e.preventDefault(); // Important: Prevent default browser behavior (scrolling/selection) for the viewer dragging
       
       containerRef.current?.setPointerCapture(e.pointerId);
       pointers.current.set(e.pointerId, e);
@@ -556,16 +575,19 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
               // Click check
               const dist = Math.sqrt(Math.pow(e.clientX - startPos.current.x, 2) + Math.pow(e.clientY - startPos.current.y, 2));
               if (dist < 10) { 
-                   handleOCRClickLogic(e);
-              } else {
-                  // Snap back if scaled to 1
-                   if (transform.current.scale <= 1.05) {
-                       transform.current.x = 0;
-                       transform.current.y = 0;
-                       transform.current.scale = 1;
-                       updateDOM();
-                       setScale(1);
-                   }
+                  // Handle click for Panel mode only (Popup handled by text-box events or ignored)
+                  if (settings.dictionaryMode === 'panel') {
+                      handleOCRClickLogic(e);
+                  } else {
+                      // Snap back if scaled to 1
+                       if (transform.current.scale <= 1.05) {
+                           transform.current.x = 0;
+                           transform.current.y = 0;
+                           transform.current.scale = 1;
+                           updateDOM();
+                           setScale(1);
+                       }
+                  }
               }
           }
       } else if (pointers.current.size === 1) {
@@ -577,7 +599,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
   };
 
   const handleOCRClickLogic = (e: React.PointerEvent) => {
-       if (!showOcr) return; // Fix: Prevent click if OCR disabled
+       if (!showOcr) return; 
        if (!contentRef.current) return;
        // Find which page image was clicked
        const wrappers = Array.from(contentRef.current.children) as HTMLElement[];
@@ -652,53 +674,158 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
         style={{ transformOrigin: 'center', willChange: 'transform' }} 
       >
         {displayPages.map((page, index) => (
-            <div key={index} className="relative group">
-                <img 
-                    src={page.url} 
-                    alt={`Page`} 
-                    className="max-h-screen object-contain pointer-events-none select-none block"
-                    style={{ maxWidth: settings.pageViewMode === 'double' ? '50vw' : '100vw' }} 
-                />
-                {page.ocr && showOcr && !page.isTranslated && (
-                <div className="absolute inset-0 pointer-events-none">
-                    <svg className="w-full h-full" preserveAspectRatio="none">
-                        <ImageOverlay 
-                            ocrData={page.ocr} 
-                            overlayStyle={settings.overlayStyle}
-                            onOcrClick={() => {}} 
-                            dictionaryMode={settings.dictionaryMode} 
-                            pageIndex={index}
-                            allowInteraction={false}
-                        />
-                    </svg>
-                </div>
-                )}
-            </div>
+            <PageWrapper 
+                key={index}
+                page={page}
+                showOcr={showOcr}
+                onOcrClick={onOcrClick}
+                settings={settings}
+            />
         ))}
       </div>
     </div>
   );
 };
 
+const PageWrapper: React.FC<{
+    page: PageContent,
+    showOcr: boolean,
+    onOcrClick: (text: string, box: MokuroBlock) => void,
+    settings: ReaderSettings
+}> = ({ page, showOcr, onOcrClick, settings }) => {
+    const [imgDim, setImgDim] = useState<{w: number, h: number} | null>(null);
+
+    return (
+        <div className="relative group">
+            <img 
+                src={page.url} 
+                alt={`Page`} 
+                className="max-h-screen object-contain pointer-events-none select-none block"
+                style={{ maxWidth: settings.pageViewMode === 'double' ? '50vw' : '100vw' }}
+                onLoad={(e) => setImgDim({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+            />
+            
+            {/* HTML Overlay for Popup Mode */}
+            {page.ocr && showOcr && !page.isTranslated && imgDim && settings.dictionaryMode === 'popup' && (
+                <TextOverlayLayer 
+                    ocrData={page.ocr}
+                    naturalWidth={imgDim.w}
+                    naturalHeight={imgDim.h}
+                    learningLanguage={settings.learningLanguage}
+                    onOcrClick={onOcrClick}
+                />
+            )}
+
+            {/* SVG Overlay for Panel Mode */}
+            {page.ocr && showOcr && !page.isTranslated && imgDim && settings.dictionaryMode === 'panel' && (
+                <div className="absolute inset-0 pointer-events-none">
+                    <svg className="w-full h-full" viewBox={`0 0 ${imgDim.w} ${imgDim.h}`}>
+                        <ImageOverlay 
+                            ocrData={page.ocr} 
+                            overlayStyle={settings.overlayStyle}
+                            onOcrClick={() => {}} // Interaction via parent logic in PaginationViewer for click
+                            allowInteraction={false}
+                        />
+                    </svg>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// --- Overlay for Popup Mode (HTML Divs with Hover) ---
+const TextOverlayLayer: React.FC<{
+    ocrData: MokuroPage,
+    naturalWidth: number,
+    naturalHeight: number,
+    learningLanguage?: string,
+    onOcrClick: (text: string, box: MokuroBlock) => void
+}> = ({ ocrData, naturalWidth, naturalHeight, learningLanguage, onOcrClick }) => {
+    const isJapanese = learningLanguage === 'ja';
+    const sep = getLineSeparator(learningLanguage);
+
+    return (
+        <div className="absolute inset-0 pointer-events-none z-10">
+            {ocrData.blocks.map((block, idx) => {
+                const [x1, y1, x2, y2] = block.box;
+                const width = x2 - x1;
+                const height = y2 - y1;
+                
+                // Convert coordinates to percentages
+                const leftPct = (x1 / naturalWidth) * 100;
+                const topPct = (y1 / naturalHeight) * 100;
+                const widthPct = (width / naturalWidth) * 100;
+                const heightPct = (height / naturalHeight) * 100;
+                
+                const text = block.lines.join(sep);
+
+                return (
+                    <div
+                        key={idx}
+                        className="text-box absolute hover:z-50"
+                        style={{
+                            left: `${leftPct}%`,
+                            top: `${topPct}%`,
+                            width: `${widthPct}%`,
+                            height: `${heightPct}%`,
+                            pointerEvents: 'auto',
+                            userSelect: 'none',
+                            display: 'flex',
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            padding: 0,
+                            margin: 0
+                        }}
+                        onPointerUp={(e) => {
+                            e.stopPropagation(); 
+                            onOcrClick(text, block);
+                        }}
+                    >
+                        <p 
+                            className="transition-all duration-150 rounded-sm shadow-sm"
+                            style={{
+                                color: 'transparent',
+                                backgroundColor: 'transparent',
+                                display: 'inline-block', // Shrink to fit text
+                                pointerEvents: 'auto',
+                                userSelect: 'text',
+                                fontSize: 'clamp(10px, 1.5vw, 16px)',
+                                writingMode: isJapanese ? 'vertical-rl' : 'horizontal-tb',
+                                textOrientation: 'upright',
+                                lineHeight: isJapanese ? undefined : '1.2',
+                                whiteSpace: 'pre-wrap',
+                                margin: 0,
+                                padding: '2px', // Minimal padding for visual
+                                caretColor: 'transparent' // Hide cursor when transparent
+                            }}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.color = 'black';
+                                e.currentTarget.style.backgroundColor = 'white';
+                                e.currentTarget.style.caretColor = 'auto';
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.color = 'transparent';
+                                e.currentTarget.style.backgroundColor = 'transparent';
+                                e.currentTarget.style.caretColor = 'transparent';
+                            }}
+                        >
+                            {text}
+                        </p>
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
+// --- Overlay for Panel Mode (SVG Rects) ---
 const ImageOverlay: React.FC<{
     ocrData: MokuroPage, 
     overlayStyle: 'hidden' | 'outline' | 'fill',
     onOcrClick: (text: string, box: MokuroBlock) => void,
-    dictionaryMode: 'panel' | 'popup',
-    pageIndex?: number,
     allowInteraction?: boolean
-}> = ({ ocrData, overlayStyle, onOcrClick, dictionaryMode, pageIndex = 0, allowInteraction }) => {
-    const gRef = useRef<SVGGElement>(null);
-
-    useEffect(() => {
-        const svg = gRef.current?.ownerSVGElement;
-        const div = svg?.parentElement?.parentElement;
-        const img = div?.querySelector('img');
-        if (img && img.naturalWidth) {
-           svg?.setAttribute("viewBox", `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
-        }
-    }, [ocrData]);
-
+}> = ({ ocrData, overlayStyle, onOcrClick, allowInteraction }) => {
+    
     const getStyleClass = () => {
         switch (overlayStyle) {
             case 'fill': 
@@ -706,7 +833,6 @@ const ImageOverlay: React.FC<{
             case 'outline': 
                 return 'fill-transparent stroke-yellow-200/50 stroke-[2px] pointer-events-auto cursor-pointer hover:stroke-yellow-400 hover:fill-yellow-400/10 transition-all duration-150';
             default: 
-                // Changed from pointer-events-none to auto+cursor-pointer so users can click hidden bubbles
                 return 'fill-transparent stroke-transparent pointer-events-auto cursor-pointer';
         }
     };
@@ -714,7 +840,7 @@ const ImageOverlay: React.FC<{
     const styleClass = getStyleClass();
 
     return (
-        <g ref={gRef}>
+        <g>
              {ocrData.blocks.map((block, idx) => {
                 const [x1, y1, x2, y2] = block.box;
                 return (
@@ -722,6 +848,7 @@ const ImageOverlay: React.FC<{
                         <rect
                             x={x1} y={y1} width={x2-x1} height={y2-y1}
                             className={styleClass}
+                            onClick={() => onOcrClick(block.lines.join('\n'), block)}
                         />
                     </React.Fragment>
                 );
