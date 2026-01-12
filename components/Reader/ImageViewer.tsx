@@ -31,18 +31,19 @@ interface ImageViewerProps {
   onPageChange?: (page: number) => void;
   
   isSelecting?: boolean;
-  onCrop?: (dataUrl: string) => void;
+  onCrop?: (dataUrl: string, box: { x: number, y: number, w: number, h: number }) => void;
   isMagnifying?: boolean;
   magnifierLevel?: number;
 }
 
 const getLineSeparator = (lang: string | undefined) => {
     // CJK languages usually don't use spaces between lines/words in this context
+    // If the original text didn't have a space, we shouldn't add one.
     const cjk = ['zh', 'zh-Hant', 'ja', 'ko'];
     if (lang && cjk.includes(lang)) {
         return '';
     }
-    // For English and others, add a space to prevent "word\nword" becoming "wordword" or relying on newline rendering
+    // For English and others, add a standard space
     return ' ';
 };
 
@@ -164,7 +165,10 @@ const MagnifierLens: React.FC<{
 };
 
 // --- Crop Overlay Component ---
-const CropOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | null>, onCrop: (data: string) => void }> = ({ containerRef, onCrop }) => {
+const CropOverlay: React.FC<{ 
+    containerRef: React.RefObject<HTMLDivElement | null>, 
+    onCrop: (data: string, box: { x: number, y: number, w: number, h: number }) => void 
+}> = ({ containerRef, onCrop }) => {
     const [startPos, setStartPos] = useState<{x: number, y: number} | null>(null);
     const [currPos, setCurrPos] = useState<{x: number, y: number} | null>(null);
 
@@ -198,6 +202,7 @@ const CropOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | nul
         if (w > 10 && h > 10) {
             const imgs = containerRef.current.querySelectorAll('img');
             let bestCrop: string | null = null;
+            let bestBox = { x: 0, y: 0, w: 0, h: 0 };
             let maxArea = 0;
 
             imgs.forEach((img) => {
@@ -225,13 +230,14 @@ const CropOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement | nul
                         if (ctx) {
                             ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
                             bestCrop = canvas.toDataURL('image/png');
+                            bestBox = { x: sx, y: sy, w: sw, h: sh };
                         }
                     }
                 }
             });
 
             if (bestCrop) {
-                onCrop(bestCrop);
+                onCrop(bestCrop, bestBox);
             }
         }
         setStartPos(null);
@@ -430,7 +436,7 @@ const LazyWebtoonImage: React.FC<{
                             ocrData={ocr}
                             naturalWidth={imgDim.w}
                             naturalHeight={imgDim.h}
-                            learningLanguage={settings.learningLanguage}
+                            settings={settings}
                             onOcrClick={onOcrClick}
                         />
                     )}
@@ -444,6 +450,7 @@ const LazyWebtoonImage: React.FC<{
                                     overlayStyle={settings.overlayStyle}
                                     onOcrClick={() => {}} // Handled by parent container in webtoon mode for better scroll perf
                                     allowInteraction={false}
+                                    learningLanguage={settings.learningLanguage}
                                 />
                             </svg>
                         </div>
@@ -711,7 +718,7 @@ const PageWrapper: React.FC<{
                     ocrData={page.ocr}
                     naturalWidth={imgDim.w}
                     naturalHeight={imgDim.h}
-                    learningLanguage={settings.learningLanguage}
+                    settings={settings}
                     onOcrClick={onOcrClick}
                 />
             )}
@@ -725,6 +732,7 @@ const PageWrapper: React.FC<{
                             overlayStyle={settings.overlayStyle}
                             onOcrClick={() => {}} // Interaction via parent logic in PaginationViewer for click
                             allowInteraction={false}
+                            learningLanguage={settings.learningLanguage}
                         />
                     </svg>
                 </div>
@@ -738,11 +746,13 @@ const TextOverlayLayer: React.FC<{
     ocrData: MokuroPage,
     naturalWidth: number,
     naturalHeight: number,
-    learningLanguage?: string,
+    settings: ReaderSettings,
     onOcrClick: (text: string, box: MokuroBlock) => void
-}> = ({ ocrData, naturalWidth, naturalHeight, learningLanguage, onOcrClick }) => {
+}> = ({ ocrData, naturalWidth, naturalHeight, settings, onOcrClick }) => {
+    const learningLanguage = settings.learningLanguage;
     const isJapanese = learningLanguage === 'ja';
     const sep = getLineSeparator(learningLanguage);
+    const fontSize = settings.popupFontSize || 16;
 
     return (
         <div className="absolute inset-0 pointer-events-none z-10">
@@ -789,7 +799,7 @@ const TextOverlayLayer: React.FC<{
                                 display: 'inline-block', // Shrink to fit text
                                 pointerEvents: 'auto',
                                 userSelect: 'text',
-                                fontSize: 'clamp(10px, 1.5vw, 16px)',
+                                fontSize: `${fontSize}px`, // Use setting
                                 writingMode: isJapanese ? 'vertical-rl' : 'horizontal-tb',
                                 textOrientation: 'upright',
                                 lineHeight: isJapanese ? undefined : '1.2',
@@ -823,8 +833,9 @@ const ImageOverlay: React.FC<{
     ocrData: MokuroPage, 
     overlayStyle: 'hidden' | 'outline' | 'fill',
     onOcrClick: (text: string, box: MokuroBlock) => void,
-    allowInteraction?: boolean
-}> = ({ ocrData, overlayStyle, onOcrClick, allowInteraction }) => {
+    allowInteraction?: boolean,
+    learningLanguage?: string
+}> = ({ ocrData, overlayStyle, onOcrClick, allowInteraction, learningLanguage }) => {
     
     const getStyleClass = () => {
         switch (overlayStyle) {
@@ -838,6 +849,7 @@ const ImageOverlay: React.FC<{
     };
 
     const styleClass = getStyleClass();
+    const sep = getLineSeparator(learningLanguage);
 
     return (
         <g>
@@ -848,7 +860,7 @@ const ImageOverlay: React.FC<{
                         <rect
                             x={x1} y={y1} width={x2-x1} height={y2-y1}
                             className={styleClass}
-                            onClick={() => onOcrClick(block.lines.join('\n'), block)}
+                            onClick={() => onOcrClick(block.lines.join(sep), block)}
                         />
                     </React.Fragment>
                 );

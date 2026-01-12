@@ -1,10 +1,12 @@
 
 
 import React, { useState, useEffect } from 'react';
-import { AnkiSettingsType, ReaderSettings, Book, Keybindings, Bookmark, WebSearchEngine } from '../../types';
-import { X, Eye, Book as BookIcon, Monitor, Globe, Layout, ArrowRightLeft, ChevronDown, ChevronRight, Upload, Keyboard, RotateCcw, Download, Mic, Database, Wifi, Tag, Sun, Moon, Edit3, Trash2, Settings, Loader2, Save, Bookmark as BookmarkIcon } from 'lucide-react';
+import { AnkiSettingsType, ReaderSettings, Book, Keybindings, Bookmark, WebSearchEngine, LocalDictionary, SUPPORTED_LANGUAGES } from '../../types';
+import { X, Eye, Book as BookIcon, Monitor, Globe, Layout, ArrowRightLeft, ChevronDown, ChevronRight, Upload, Keyboard, RotateCcw, Download, Mic, Database, Wifi, Tag, Sun, Moon, Edit3, Trash2, Settings, Loader2, Save, Bookmark as BookmarkIcon, Play, Copy, BookOpenText, Info, ArrowUp, ArrowDown, Activity } from 'lucide-react';
 import { getDecks, getModels, getModelFields } from '../../services/anki';
-import { updateBookTranslatedFile, updateBookOffset, exportData } from '../../services/db';
+import { updateBookTranslatedFile, updateBookOffset, exportData, updateBookAnkiTags } from '../../services/db';
+import { getDictionaries, deleteDictionary, updateDictionaryPriority } from '../../services/db';
+import { importYomitanDictionary } from '../../services/dictionary';
 import { t } from '../../services/i18n';
 import { OCR_LANGUAGES } from '../../services/ocr';
 
@@ -19,7 +21,7 @@ interface SidebarProps {
   setAnkiSettings: (s: AnkiSettingsType) => void;
   readerSettings: ReaderSettings;
   setReaderSettings: (s: ReaderSettings) => void;
-  bookmarks?: Bookmark[];
+  bookmarks?: Bookmark[]; 
   onJumpToPage?: (idx: number) => void;
   onEditBookmark?: (bm: Bookmark) => void;
   onDeleteBookmark?: (id: string) => void;
@@ -74,18 +76,41 @@ const Sidebar: React.FC<SidebarProps> = ({
     const [recordingKey, setRecordingKey] = useState<keyof Keybindings | null>(null);
     const [offsetInput, setOffsetInput] = useState(book?.pageOffset || 0);
     const [loadingAnki, setLoadingAnki] = useState(false);
-    // Add state to track if connection has been manually verified
     const [isAnkiConnected, setIsAnkiConnected] = useState(false);
+    const [testingExternal, setTestingExternal] = useState(false);
     
     const [decks, setDecks] = useState<string[]>([]);
     const [models, setModels] = useState<string[]>([]);
     const [fields, setFields] = useState<string[]>([]);
     const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
     
-    // Search Engine Logic
+    // TTS Test
+    const [ttsTestText, setTtsTestText] = useState('Hello World');
+
+    // Local Dictionary State
+    const [localDicts, setLocalDicts] = useState<LocalDictionary[]>([]);
+    const [importingDict, setImportingDict] = useState(false);
+    const [importStatus, setImportStatus] = useState('');
+    const [importLang, setImportLang] = useState<string>('universal');
+
+    useEffect(() => {
+        // Update default test text based on learning language
+        const msgs: Record<string, string> = {
+            en: 'Hello World',
+            zh: '你好世界',
+            ja: 'こんにちは世界',
+            ko: '안녕하세요 세계',
+            fr: 'Bonjour le monde',
+            de: 'Hallo Welt',
+            es: 'Hola Mundo',
+            ru: 'Привет мир'
+        };
+        setTtsTestText(msgs[readerSettings.learningLanguage] || 'Hello');
+    }, [readerSettings.learningLanguage]);
+
+    // Update Search Category Logic
     const isTrans = ['bing_trans', 'deepl', 'baidu_trans', 'youdao_trans'].includes(readerSettings.webSearchEngine);
     const isEncyclopedia = ['baidu_baike', 'wikipedia', 'moegirl'].includes(readerSettings.webSearchEngine);
-    
     const [searchCategory, setSearchCategory] = useState<'search' | 'translate' | 'encyclopedia'>(
         isEncyclopedia ? 'encyclopedia' : isTrans ? 'translate' : 'search'
     );
@@ -106,7 +131,84 @@ const Sidebar: React.FC<SidebarProps> = ({
         return () => { window.speechSynthesis.onvoiceschanged = null; };
     }, []);
 
-    // Keep exact logic for key recording to avoid breaking changes
+    useEffect(() => {
+        loadDictionaries();
+    }, []);
+
+    const loadDictionaries = async () => {
+        const dicts = await getDictionaries();
+        setLocalDicts(dicts);
+    };
+
+    const handleImportDict = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0]) {
+            const file = e.target.files[0];
+            setImportingDict(true);
+            setImportStatus('Initializing...');
+            try {
+                await importYomitanDictionary(file, importLang, (msg) => setImportStatus(msg));
+                await loadDictionaries();
+                alert("Dictionary imported successfully!");
+            } catch (err) {
+                alert("Import failed: " + err);
+            } finally {
+                setImportingDict(false);
+                setImportStatus('');
+            }
+        }
+    };
+
+    const handleDeleteDict = async (id: string) => {
+        if (confirm("Delete this dictionary?")) {
+            await deleteDictionary(id);
+            await loadDictionaries();
+        }
+    };
+
+    const moveDict = async (index: number, direction: 'up' | 'down') => {
+        if (direction === 'up' && index === 0) return;
+        if (direction === 'down' && index === localDicts.length - 1) return;
+
+        const newDicts = [...localDicts];
+        const swapIndex = direction === 'up' ? index - 1 : index + 1;
+        
+        // Swap array elements
+        [newDicts[index], newDicts[swapIndex]] = [newDicts[swapIndex], newDicts[index]];
+        setLocalDicts(newDicts);
+
+        // Update DB priorities
+        // Assign priority based on new index
+        for (let i = 0; i < newDicts.length; i++) {
+            await updateDictionaryPriority(newDicts[i].id, i);
+        }
+    };
+
+    const testExternalConnection = async () => {
+        setTestingExternal(true);
+        try {
+            await new Promise((resolve, reject) => {
+                const id = Date.now().toString();
+                const handler = (event: MessageEvent) => {
+                    if (event.data && event.data.type === 'MOKURO_PONG' && event.data.id === id) {
+                        window.removeEventListener('message', handler);
+                        resolve(true);
+                    }
+                };
+                window.addEventListener('message', handler);
+                window.postMessage({ type: 'MOKURO_PING', id }, '*');
+                setTimeout(() => {
+                    window.removeEventListener('message', handler);
+                    reject('Timeout');
+                }, 1000);
+            });
+            alert(t(readerSettings.language, 'connectionSuccess'));
+        } catch (e) {
+            alert(t(readerSettings.language, 'connectionFailed'));
+        } finally {
+            setTestingExternal(false);
+        }
+    };
+
     useEffect(() => {
         if (!recordingKey) return;
         let rafId: number;
@@ -147,7 +249,6 @@ const Sidebar: React.FC<SidebarProps> = ({
             setModels(m);
             setIsAnkiConnected(true);
             
-            // Auto-select if current is invalid or empty to ensure fields load
             let newSettings = { ...ankiSettings };
             let changed = false;
             
@@ -172,10 +273,9 @@ const Sidebar: React.FC<SidebarProps> = ({
         }
     };
     
-    // Only load model fields when connected and model changes
     useEffect(() => {
         if(ankiSettings.noteType && isAnkiConnected) {
-            setFields([]); // Clear fields while loading
+            setFields([]); 
             getModelFields(ankiSettings.noteType, ankiSettings).then(setFields).catch(() => {});
         }
     }, [ankiSettings.noteType, isAnkiConnected]);
@@ -188,11 +288,23 @@ const Sidebar: React.FC<SidebarProps> = ({
         if (book && e.target.files && e.target.files[0]) { await updateBookTranslatedFile(book.id, e.target.files[0]); if (onBookUpdate) onBookUpdate(); }
     };
 
+    const handleTtsTest = () => {
+        // Add basic test logic for browser TTS, external is handled by event simulation maybe?
+        const utt = new SpeechSynthesisUtterance(ttsTestText);
+        if (readerSettings.ttsVoiceURI) {
+            const voice = voices.find(v => v.voiceURI === readerSettings.ttsVoiceURI);
+            if (voice) utt.voice = voice;
+        }
+        utt.rate = readerSettings.ttsRate || 1;
+        utt.pitch = readerSettings.ttsPitch || 1;
+        utt.volume = readerSettings.ttsVolume || 1;
+        window.speechSynthesis.speak(utt);
+    };
+
     const formatKey = (k: string) => {
         if (k === ' ') return 'Space';
         if (k.startsWith('Arrow')) return k.replace('Arrow', '');
-        if (k.startsWith('GP_Btn_')) return `Gamepad ${k.split('_')[2]}`;
-        if (k.startsWith('GP_Axis_')) return `Axis ${k.split('_')[2]} ${k.split('_')[3]}`;
+        if (k.startsWith('GP_Btn_')) return `GP ${k.split('_')[2]}`;
         return k.toUpperCase();
     };
 
@@ -213,150 +325,21 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin scrollbar-thumb-current scrollbar-track-transparent">
-                {book && (
-                    <Section title={t(readerSettings.language, 'bookDetails')} icon={<BookIcon size={14}/>} theme={theme}>
-                        <div className={`rounded-xl p-3 border space-y-3 ${isLight ? 'bg-zinc-50 border-zinc-200' : 'bg-surfaceLight/50 border-white/5'}`}>
-                             <div>
-                                <label className={`text-[10px] uppercase font-bold mb-1 block ${textSub}`}>{t(readerSettings.language, 'translation')}</label>
-                                <div className="flex gap-2">
-                                    <label className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg cursor-pointer text-xs font-medium transition-colors border ${inputBg} ${itemHover} ${isLight ? 'text-zinc-700' : 'text-zinc-300'}`}>
-                                        <Upload size={14}/> {t(readerSettings.language, 'uploadTrans')}
-                                        <input type="file" className="hidden" accept=".zip,.cbz" onChange={handleTransUpload} />
-                                    </label>
-                                </div>
-                            </div>
-                            
-                            <div>
-                                <label className={`text-[10px] uppercase font-bold mb-1 block ${textSub}`}>{t(readerSettings.language, 'pageOffset')}</label>
-                                <div className="flex gap-2">
-                                    <input type="number" value={offsetInput} onChange={e => setOffsetInput(parseInt(e.target.value) || 0)} className={`w-20 rounded-lg px-2 text-sm border ${inputBg}`} />
-                                    <button onClick={handleOffsetChange} className="flex-1 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary rounded-lg text-xs font-bold transition-colors">{t(readerSettings.language, 'update')}</button>
-                                </div>
-                                <p className={`text-[10px] mt-1 ${textSub}`}>{t(readerSettings.language, 'pageOffsetDesc')}</p>
-                            </div>
-                        </div>
-                    </Section>
-                )}
-
-                {book && bookmarks && bookmarks.length > 0 && (
-                    <Section title={t(readerSettings.language, 'bookmarks')} icon={<BookmarkIcon size={14}/>} theme={theme}>
-                        <div className="space-y-2 max-h-40 overflow-y-auto pr-1 scrollbar-thin">
-                            {bookmarks.map(bm => (
-                                <div key={bm.id} className={`flex items-center justify-between p-2 rounded-lg border group ${isLight ? 'bg-zinc-50 border-zinc-200 hover:border-zinc-300' : 'bg-black/20 border-white/5 hover:border-white/10'}`}>
-                                    <div className="flex items-center gap-3 cursor-pointer flex-1" onClick={() => { if(onJumpToPage) onJumpToPage(bm.pageIndex); }}>
-                                        <div className={`w-2 h-2 rounded-full ${
-                                            bm.color === 'blue' ? 'bg-blue-500' : 
-                                            bm.color === 'green' ? 'bg-green-500' : 
-                                            bm.color === 'yellow' ? 'bg-yellow-500' : 
-                                            bm.color === 'purple' ? 'bg-purple-500' : 'bg-red-500'
-                                        }`} />
-                                        <div className="flex flex-col">
-                                            <span className={`text-xs font-medium ${textMain}`}>{bm.title || `Page ${bm.pageIndex + 1}`}</span>
-                                            {bm.note && <span className={`text-[10px] truncate max-w-[140px] ${textSub}`}>{bm.note}</span>}
-                                        </div>
-                                    </div>
-                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <button onClick={() => onEditBookmark?.(bm)} className={`p-1 ${textSub} hover:text-primary`}><Edit3 size={12}/></button>
-                                        <button onClick={() => onDeleteBookmark?.(bm.id)} className={`p-1 ${textSub} hover:text-red-400`}><Trash2 size={12}/></button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </Section>
-                )}
                 
-                <Section title={t(readerSettings.language, 'display')} icon={<Monitor size={14}/>} theme={theme}>
-                    <div className="space-y-3">
-                         <Toggle label={t(readerSettings.language, 'showOcr')} checked={showOcr} onChange={() => setShowOcr(!showOcr)} icon={<Eye size={16}/>} theme={theme} />
-                         
-                         {showOcr && (
-                            <div className="animate-in slide-in-from-top-1">
-                                <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'ocrLanguage')}</label>
-                                <select 
-                                    value={readerSettings.tesseractLanguage} 
-                                    onChange={(e) => setReaderSettings({...readerSettings, tesseractLanguage: e.target.value})}
-                                    className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
-                                >
-                                    {OCR_LANGUAGES.map(l => (
-                                        <option key={l.code} value={l.code}>{l.name}</option>
-                                    ))}
-                                </select>
-                            </div>
-                         )}
-
-                         <div>
-                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'theme')}</label>
-                            <div className={`flex p-1 rounded-xl ${itemBg}`}>
-                                <button onClick={() => setReaderSettings({...readerSettings, theme: 'light'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 ${readerSettings.theme === 'light' ? 'bg-white text-black shadow-md' : `${textSub} hover:text-primary`}`}><Sun size={12}/> {t(readerSettings.language, 'themeLight')}</button>
-                                <button onClick={() => setReaderSettings({...readerSettings, theme: 'dark'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 ${readerSettings.theme === 'dark' ? 'bg-zinc-700 text-white shadow-md' : `${textSub} hover:text-primary`}`}><Moon size={12}/> {t(readerSettings.language, 'themeDark')}</button>
-                            </div>
-                        </div>
-
-                         <div>
-                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'overlayStyle')}</label>
-                            <div className="grid grid-cols-3 gap-2">
-                                {['hidden', 'outline', 'fill'].map(style => (
-                                    <button 
-                                        key={style}
-                                        onClick={() => setReaderSettings({...readerSettings, overlayStyle: style as any})}
-                                        className={`py-2 text-[10px] uppercase font-bold rounded-lg border transition-all ${readerSettings.overlayStyle === style ? 'bg-primary border-primary text-white shadow-lg' : `${itemBg} border-transparent ${textSub} ${itemHover}`}`}
-                                    >
-                                        {style === 'hidden' ? t(readerSettings.language, 'styleHidden').split(' ')[0] : 
-                                         style === 'outline' ? t(readerSettings.language, 'styleOutline').split(' ')[0] : 
-                                         t(readerSettings.language, 'styleFill').split(' ')[0]}
-                                    </button>
-                                ))}
-                            </div>
-                         </div>
-                    </div>
-                </Section>
-
-                <Section title={t(readerSettings.language, 'reading')} icon={<BookIcon size={14}/>} theme={theme}>
-                     <div className="space-y-4">
-                        <div>
-                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'viewMode')}</label>
-                            <div className={`flex p-1 rounded-xl ${itemBg}`}>
-                                <button onClick={() => setReaderSettings({...readerSettings, pageViewMode: 'single'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.pageViewMode === 'single' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'singlePage')}</button>
-                                <button onClick={() => setReaderSettings({...readerSettings, pageViewMode: 'double'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.pageViewMode === 'double' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'doublePage')}</button>
-                                <button onClick={() => setReaderSettings({...readerSettings, pageViewMode: 'webtoon'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.pageViewMode === 'webtoon' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'webtoonMode')}</button>
-                            </div>
-                        </div>
-
-                         <div>
-                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'direction')}</label>
-                            <div className={`flex p-1 rounded-xl ${itemBg}`}>
-                                <button onClick={() => setReaderSettings({...readerSettings, readingDirection: 'ltr'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.readingDirection === 'ltr' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'ltr')}</button>
-                                <button onClick={() => setReaderSettings({...readerSettings, readingDirection: 'rtl'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.readingDirection === 'rtl' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'rtl')}</button>
-                            </div>
-                        </div>
-
-                        <Toggle label={t(readerSettings.language, 'enableCompare')} checked={readerSettings.compareMode} onChange={() => setReaderSettings({...readerSettings, compareMode: !readerSettings.compareMode})} icon={<ArrowRightLeft size={16}/>} theme={theme} />
-                        
-                        {readerSettings.compareMode && readerSettings.pageViewMode === 'double' && (
-                             <div>
-                                <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'comparisonLayout')}</label>
-                                <div className="grid grid-cols-1 gap-2">
-                                    <button onClick={() => setReaderSettings({...readerSettings, comparisonLayout: 'standard'})} className={`w-full py-2 px-3 text-xs font-bold rounded-lg border text-left transition-all ${readerSettings.comparisonLayout === 'standard' ? 'bg-primary/20 border-primary text-primary' : `${itemBg} border-transparent ${textSub} ${itemHover}`}`}>
-                                        {t(readerSettings.language, 'standardLayout')}
-                                    </button>
-                                    <button onClick={() => setReaderSettings({...readerSettings, comparisonLayout: 'swapped'})} className={`w-full py-2 px-3 text-xs font-bold rounded-lg border text-left transition-all ${readerSettings.comparisonLayout === 'swapped' ? 'bg-primary/20 border-primary text-primary' : `${itemBg} border-transparent ${textSub} ${itemHover}`}`}>
-                                        {t(readerSettings.language, 'swappedLayout')}
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                     </div>
-                </Section>
-
-                <Section title={t(readerSettings.language, 'general')} icon={<Settings size={14}/>} theme={theme}>
+                {/* General Settings Moved First */}
+                <Section title={t(readerSettings.language, 'general')} icon={<Settings size={14}/>} theme={theme} defaultOpen={true}>
                      <div className="space-y-4">
                         <div>
                             <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'language')}</label>
-                            <div className={`flex p-1 rounded-xl ${itemBg} gap-1`}>
-                                <button onClick={() => setReaderSettings({...readerSettings, language: 'zh'})} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${readerSettings.language === 'zh' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>簡體</button>
-                                <button onClick={() => setReaderSettings({...readerSettings, language: 'zh-Hant'})} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${readerSettings.language === 'zh-Hant' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>繁體</button>
-                                <button onClick={() => setReaderSettings({...readerSettings, language: 'en'})} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${readerSettings.language === 'en' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>EN</button>
-                            </div>
+                            <select 
+                                value={readerSettings.language} 
+                                onChange={(e) => setReaderSettings({...readerSettings, language: e.target.value as any})}
+                                className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
+                            >
+                                <option value="zh">简体中文</option>
+                                <option value="zh-Hant">繁體中文</option>
+                                <option value="en">English</option>
+                            </select>
                         </div>
 
                         <div>
@@ -366,19 +349,36 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 onChange={(e) => setReaderSettings({...readerSettings, learningLanguage: e.target.value as any})}
                                 className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
                             >
-                                <option value="en">English (EN)</option>
-                                <option value="zh">Chinese (ZH)</option>
-                                <option value="ja">Japanese (JP)</option>
-                                <option value="ko">Korean (KO)</option>
-                                <option value="es">Spanish (ES)</option>
-                                <option value="fr">French (FR)</option>
-                                <option value="de">German (DE)</option>
-                                <option value="ru">Russian (RU)</option>
-                                <option value="it">Italian (IT)</option>
-                                <option value="pt">Portuguese (PT)</option>
+                                {SUPPORTED_LANGUAGES.map(lang => (
+                                    <option key={lang.code} value={lang.code}>{lang.name}</option>
+                                ))}
                             </select>
                         </div>
 
+                        {/* Segmentation Settings */}
+                        <div>
+                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'segmentationMethod')}</label>
+                            <select 
+                                value={readerSettings.segmentationMethod || 'browser'} 
+                                onChange={(e) => setReaderSettings({...readerSettings, segmentationMethod: e.target.value as any})}
+                                className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
+                            >
+                                <option value="space">{t(readerSettings.language, 'segSpace')}</option>
+                                <option value="browser">{t(readerSettings.language, 'segBrowser')}</option>
+                                <option value="external">{t(readerSettings.language, 'segExternal')}</option>
+                                {readerSettings.learningLanguage === 'ja' && (
+                                    <option value="kuromoji">{t(readerSettings.language, 'segKuromoji')}</option>
+                                )}
+                            </select>
+                            {readerSettings.segmentationMethod === 'external' && (
+                                <button onClick={testExternalConnection} disabled={testingExternal} className={`mt-2 w-full py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 border ${itemBg} ${textSub} ${itemHover}`}>
+                                    {testingExternal ? <Loader2 size={12} className="animate-spin"/> : <Activity size={12}/>}
+                                    {t(readerSettings.language, 'testScript')}
+                                </button>
+                            )}
+                        </div>
+
+                        {/* ... Web Search Engine code ... */}
                         <div>
                             <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'webSearchEngine')}</label>
                             <div className="space-y-2">
@@ -387,7 +387,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                                     onChange={(e) => {
                                         const cat = e.target.value as 'search' | 'translate' | 'encyclopedia';
                                         setSearchCategory(cat);
-                                        // Set default when category changes
                                         if (cat === 'search') setReaderSettings({...readerSettings, webSearchEngine: 'google'});
                                         else if (cat === 'encyclopedia') setReaderSettings({...readerSettings, webSearchEngine: 'wikipedia'});
                                         else setReaderSettings({...readerSettings, webSearchEngine: 'bing_trans'});
@@ -429,6 +428,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                             </div>
                         </div>
 
+                        {/* ... Dictionary Mode & Overlay ... */}
                         <div>
                             <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'dictionaryMode')}</label>
                             <div className={`flex p-1 rounded-xl ${itemBg}`}>
@@ -436,49 +436,165 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 <button onClick={() => setReaderSettings({...readerSettings, dictionaryMode: 'popup'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.dictionaryMode === 'popup' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'dictPopup')}</button>
                             </div>
                         </div>
+
+                        {readerSettings.dictionaryMode === 'panel' && (
+                            <div className="mt-2 animate-in slide-in-from-top-1">
+                                <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'overlayStyle')}</label>
+                                <div className="grid grid-cols-3 gap-2">
+                                    {['hidden', 'outline', 'fill'].map(style => (
+                                        <button 
+                                            key={style}
+                                            onClick={() => setReaderSettings({...readerSettings, overlayStyle: style as any})}
+                                            className={`py-2 text-[10px] uppercase font-bold rounded-lg border transition-all ${readerSettings.overlayStyle === style ? 'bg-primary border-primary text-white shadow-lg' : `${itemBg} border-transparent ${textSub} ${itemHover}`}`}
+                                        >
+                                            {style === 'hidden' ? t(readerSettings.language, 'styleHidden').split(' ')[0] : 
+                                             style === 'outline' ? t(readerSettings.language, 'styleOutline').split(' ')[0] : 
+                                             t(readerSettings.language, 'styleFill').split(' ')[0]}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {readerSettings.dictionaryMode === 'popup' && (
+                             <div className="animate-in slide-in-from-top-1">
+                                <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'popupFontSize')} ({readerSettings.popupFontSize || 16}px)</label>
+                                <input 
+                                    type="range" min="12" max="32" step="1"
+                                    value={readerSettings.popupFontSize || 16}
+                                    onChange={(e) => setReaderSettings({...readerSettings, popupFontSize: parseInt(e.target.value)})}
+                                    className="w-full accent-primary h-1 rounded-full appearance-none bg-zinc-300 dark:bg-zinc-700"
+                                />
+                             </div>
+                         )}
+
+                        <Toggle label="Auto Copy to Clipboard" checked={readerSettings.copyToClipboard} onChange={() => setReaderSettings({...readerSettings, copyToClipboard: !readerSettings.copyToClipboard})} icon={<Copy size={16}/>} theme={theme} />
                         
                         <Toggle label={t(readerSettings.language, 'ttsEnabled')} checked={readerSettings.ttsEnabled} onChange={() => setReaderSettings({...readerSettings, ttsEnabled: !readerSettings.ttsEnabled})} icon={<Mic size={16}/>} theme={theme} />
 
                          {readerSettings.ttsEnabled && (
-                            <div className="animate-in slide-in-from-top-1">
-                                <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'ttsVoice')}</label>
-                                <select 
-                                    value={readerSettings.ttsVoiceURI} 
-                                    onChange={(e) => setReaderSettings({...readerSettings, ttsVoiceURI: e.target.value})}
-                                    className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
-                                >
-                                    <option value="">Default</option>
-                                    {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>)}
-                                </select>
+                            <div className="animate-in slide-in-from-top-1 space-y-2 bg-black/5 p-2 rounded-lg">
+                                {/* TTS Settings */}
+                                <div>
+                                    <label className={`text-[10px] uppercase font-bold block px-1 mb-1 ${textSub}`}>{t(readerSettings.language, 'audioSource')}</label>
+                                    <select 
+                                        value={readerSettings.audioSource || 'browser'} 
+                                        onChange={(e) => setReaderSettings({...readerSettings, audioSource: e.target.value as any})}
+                                        className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
+                                    >
+                                        <option value="browser">{t(readerSettings.language, 'audioBrowser')}</option>
+                                        <option value="external">{t(readerSettings.language, 'audioExternal')}</option>
+                                    </select>
+                                    {readerSettings.audioSource === 'external' && (
+                                        <button onClick={testExternalConnection} disabled={testingExternal} className={`mt-2 w-full py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 border ${itemBg} ${textSub} ${itemHover}`}>
+                                            {testingExternal ? <Loader2 size={12} className="animate-spin"/> : <Activity size={12}/>}
+                                            {t(readerSettings.language, 'testScript')}
+                                        </button>
+                                    )}
+                                </div>
+
+                                {readerSettings.audioSource !== 'external' && (
+                                    <>
+                                        <div>
+                                            <label className={`text-[10px] uppercase font-bold block px-1 mb-1 ${textSub}`}>{t(readerSettings.language, 'ttsVoice')}</label>
+                                            <select 
+                                                value={readerSettings.ttsVoiceURI} 
+                                                onChange={(e) => setReaderSettings({...readerSettings, ttsVoiceURI: e.target.value})}
+                                                className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
+                                            >
+                                                <option value="">Default</option>
+                                                {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>)}
+                                            </select>
+                                        </div>
+                                        
+                                        <div>
+                                            <label className={`text-[10px] uppercase font-bold flex justify-between px-1 ${textSub}`}><span>Rate</span> <span>{readerSettings.ttsRate}x</span></label>
+                                            <input 
+                                                type="range" min="0.5" max="2" step="0.1"
+                                                value={readerSettings.ttsRate}
+                                                onChange={(e) => setReaderSettings({...readerSettings, ttsRate: parseFloat(e.target.value)})}
+                                                className="w-full accent-primary h-1 rounded-full appearance-none bg-zinc-300 dark:bg-zinc-700"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className={`text-[10px] uppercase font-bold flex justify-between px-1 ${textSub}`}><span>Pitch</span> <span>{readerSettings.ttsPitch}</span></label>
+                                            <input 
+                                                type="range" min="0" max="2" step="0.1"
+                                                value={readerSettings.ttsPitch}
+                                                onChange={(e) => setReaderSettings({...readerSettings, ttsPitch: parseFloat(e.target.value)})}
+                                                className="w-full accent-primary h-1 rounded-full appearance-none bg-zinc-300 dark:bg-zinc-700"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className={`text-[10px] uppercase font-bold flex justify-between px-1 ${textSub}`}><span>Volume</span> <span>{readerSettings.ttsVolume}</span></label>
+                                            <input 
+                                                type="range" min="0" max="1" step="0.1"
+                                                value={readerSettings.ttsVolume}
+                                                onChange={(e) => setReaderSettings({...readerSettings, ttsVolume: parseFloat(e.target.value)})}
+                                                className="w-full accent-primary h-1 rounded-full appearance-none bg-zinc-300 dark:bg-zinc-700"
+                                            />
+                                        </div>
+                                    </>
+                                )}
+
+                                <div className="flex gap-2 pt-1">
+                                    <input value={ttsTestText} onChange={e => setTtsTestText(e.target.value)} className={`flex-1 rounded-lg px-2 py-1 text-xs border ${inputBg} ${textMain}`} />
+                                    <button onClick={handleTtsTest} className={`px-3 py-1 bg-primary text-white rounded-lg text-xs`}>
+                                        <Play size={12}/>
+                                    </button>
+                                </div>
                             </div>
                         )}
+
+                        <div>
+                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>Local Dictionaries (Yomitan)</label>
+                            
+                            <div className="flex gap-2 mb-2">
+                                <select 
+                                    value={importLang} 
+                                    onChange={(e) => setImportLang(e.target.value)}
+                                    className={`flex-1 rounded-lg px-2 py-1 text-[10px] outline-none border ${inputBg} ${textMain}`}
+                                    title="Target Language"
+                                >
+                                    <option value="universal">Universal (All)</option>
+                                    {SUPPORTED_LANGUAGES.map(lang => (
+                                        <option key={lang.code} value={lang.code}>{lang.name}</option>
+                                    ))}
+                                </select>
+                                <label className={`flex items-center justify-center p-2 border rounded-lg cursor-pointer transition-colors text-xs gap-2 ${importingDict ? 'opacity-50 cursor-wait' : ''} ${inputBg} ${textMain}`}>
+                                    {importingDict ? <Loader2 size={14} className="animate-spin"/> : <Upload size={14}/>}
+                                    <input type="file" accept=".zip" className="hidden" onChange={handleImportDict} disabled={importingDict} />
+                                </label>
+                            </div>
+                            {importingDict && <p className="text-[10px] text-primary mb-2 text-center">{importStatus}</p>}
+
+                            <div className="space-y-1 max-h-32 overflow-y-auto">
+                                {localDicts.map((d, index) => (
+                                    <div key={d.id} className="flex justify-between items-center text-xs px-2 py-1 rounded bg-black/5 hover:bg-black/10 group">
+                                        <span className="truncate flex-1" title={d.name}>{d.name} ({d.targetLang === 'universal' ? 'Univ' : d.targetLang})</span>
+                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            {index > 0 && (
+                                                <button onClick={() => moveDict(index, 'up')} className="p-1 hover:text-primary"><ArrowUp size={12}/></button>
+                                            )}
+                                            {index < localDicts.length - 1 && (
+                                                <button onClick={() => moveDict(index, 'down')} className="p-1 hover:text-primary"><ArrowDown size={12}/></button>
+                                            )}
+                                            <button onClick={() => handleDeleteDict(d.id)} className="p-1 hover:text-red-500"><Trash2 size={12}/></button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
 
                         <button onClick={() => exportData(readerSettings)} className={`w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border ${itemBg} ${textSub} ${itemHover}`}>
                             <Download size={14}/> {t(readerSettings.language, 'exportData')}
                         </button>
                      </div>
                 </Section>
-                
-                <Section title={t(readerSettings.language, 'shortcuts')} icon={<Keyboard size={14}/>} theme={theme}>
-                    <div className="space-y-3">
-                        {Object.keys(readerSettings.keybindings).map((k) => (
-                            <div key={k} className="flex items-center justify-between">
-                                <span className={`text-xs capitalize ${textSub}`}>{t(readerSettings.language, k as any) || k}</span>
-                                <button 
-                                    onClick={() => setRecordingKey(k as any)} 
-                                    className={`px-3 py-1.5 rounded-lg text-xs font-mono border ${recordingKey === k ? 'bg-red-500 text-white border-red-600 animate-pulse' : `${itemBg} ${textMain} ${itemHover}`}`}
-                                >
-                                    {recordingKey === k ? t(readerSettings.language, 'listening') : readerSettings.keybindings[k as keyof Keybindings].map(formatKey).join(', ') || t(readerSettings.language, 'clickToBind')}
-                                </button>
-                            </div>
-                        ))}
-                        <button onClick={() => setReaderSettings({...readerSettings, keybindings: { nextPage: ['ArrowRight', ' '], prevPage: ['ArrowLeft'], toggleMenu: ['m'], fullscreen: ['f'] }})} className={`w-full mt-2 py-1.5 text-[10px] flex items-center justify-center gap-1 ${textSub} ${itemHover}`}>
-                            <RotateCcw size={10}/> {t(readerSettings.language, 'resetKeys')}
-                        </button>
-                    </div>
-                </Section>
 
+                {/* Anki Integration Moved Second */}
                 <Section title={t(readerSettings.language, 'anki')} icon={<Database size={14}/>} theme={theme}>
+                     {/* ... Anki settings ... */}
                      <div className="space-y-3">
                          <div className="grid grid-cols-3 gap-2">
                              <div className="col-span-2">
@@ -541,9 +657,138 @@ const Sidebar: React.FC<SidebarProps> = ({
                                         <input type="text" value={ankiSettings.tags} onChange={e => setAnkiSettings({...ankiSettings, tags: e.target.value})} className="w-full bg-transparent text-xs outline-none" placeholder="tag1, tag2" />
                                     </div>
                                  </div>
+                                 <Toggle label={t(readerSettings.language, 'ankiBoldText')} checked={readerSettings.ankiBoldText ?? true} onChange={() => setReaderSettings({...readerSettings, ankiBoldText: !(readerSettings.ankiBoldText ?? true)})} theme={theme} />
                              </div>
                          )}
                      </div>
+                </Section>
+
+                {book && (
+                    <Section title={t(readerSettings.language, 'bookDetails')} icon={<BookIcon size={14}/>} theme={theme}>
+                        <div className={`rounded-xl p-3 border space-y-3 ${isLight ? 'bg-zinc-50 border-zinc-200' : 'bg-surfaceLight/50 border-white/5'}`}>
+                             <div>
+                                <label className={`text-[10px] uppercase font-bold mb-1 block ${textSub}`}>{t(readerSettings.language, 'translation')}</label>
+                                <div className="flex gap-2">
+                                    <label className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg cursor-pointer text-xs font-medium transition-colors border ${inputBg} ${itemHover} ${isLight ? 'text-zinc-700' : 'text-zinc-300'}`}>
+                                        <Upload size={14}/> {t(readerSettings.language, 'uploadTrans')}
+                                        <input type="file" className="hidden" accept=".zip,.cbz" onChange={handleTransUpload} />
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label className={`text-[10px] uppercase font-bold mb-1 block ${textSub}`}>{t(readerSettings.language, 'pageOffset')}</label>
+                                <div className="flex gap-2">
+                                    <input type="number" value={offsetInput} onChange={e => setOffsetInput(parseInt(e.target.value) || 0)} className={`w-20 rounded-lg px-2 text-sm border ${inputBg}`} />
+                                    <button onClick={handleOffsetChange} className="flex-1 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary rounded-lg text-xs font-bold transition-colors">{t(readerSettings.language, 'update')}</button>
+                                </div>
+                            </div>
+                        </div>
+                    </Section>
+                )}
+                
+                {/* ... Display/Reading/Shortcuts/About sections ... */}
+                {/* (Kept as is, omitting for brevity if not changed, but must include full file content) */}
+                <Section title={t(readerSettings.language, 'display')} icon={<Monitor size={14}/>} theme={theme}>
+                    <div className="space-y-3">
+                         <Toggle label={t(readerSettings.language, 'showOcr')} checked={showOcr} onChange={() => setShowOcr(!showOcr)} icon={<Eye size={16}/>} theme={theme} />
+                         
+                         {showOcr && (
+                            <div className="animate-in slide-in-from-top-1">
+                                <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'ocrLanguage')}</label>
+                                <select 
+                                    value={readerSettings.tesseractLanguage} 
+                                    onChange={(e) => setReaderSettings({...readerSettings, tesseractLanguage: e.target.value})}
+                                    className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
+                                >
+                                    {OCR_LANGUAGES.map(l => (
+                                        <option key={l.code} value={l.code}>{l.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                         )}
+
+                         <div>
+                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'theme')}</label>
+                            <div className={`flex p-1 rounded-xl ${itemBg}`}>
+                                <button onClick={() => setReaderSettings({...readerSettings, theme: 'light'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 ${readerSettings.theme === 'light' ? 'bg-white text-black shadow-md' : `${textSub} hover:text-primary`}`}><Sun size={12}/> {t(readerSettings.language, 'themeLight')}</button>
+                                <button onClick={() => setReaderSettings({...readerSettings, theme: 'dark'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 ${readerSettings.theme === 'dark' ? 'bg-zinc-700 text-white shadow-md' : `${textSub} hover:text-primary`}`}><Moon size={12}/> {t(readerSettings.language, 'themeDark')}</button>
+                            </div>
+                        </div>
+                    </div>
+                </Section>
+
+                <Section title={t(readerSettings.language, 'reading')} icon={<BookIcon size={14}/>} theme={theme}>
+                     <div className="space-y-4">
+                        <div>
+                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'viewMode')}</label>
+                            <div className={`flex p-1 rounded-xl ${itemBg}`}>
+                                <button onClick={() => setReaderSettings({...readerSettings, pageViewMode: 'single'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.pageViewMode === 'single' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'singlePage')}</button>
+                                <button onClick={() => setReaderSettings({...readerSettings, pageViewMode: 'double'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.pageViewMode === 'double' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'doublePage')}</button>
+                                <button onClick={() => setReaderSettings({...readerSettings, pageViewMode: 'webtoon'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.pageViewMode === 'webtoon' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'webtoonMode')}</button>
+                            </div>
+                        </div>
+
+                         <div>
+                            <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'direction')}</label>
+                            <div className={`flex p-1 rounded-xl ${itemBg}`}>
+                                <button onClick={() => setReaderSettings({...readerSettings, readingDirection: 'ltr'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.readingDirection === 'ltr' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'ltr')}</button>
+                                <button onClick={() => setReaderSettings({...readerSettings, readingDirection: 'rtl'})} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${readerSettings.readingDirection === 'rtl' ? (isLight ? 'bg-white text-black shadow-md' : 'bg-zinc-700 text-white shadow-md') : `${textSub} ${itemHover}`}`}>{t(readerSettings.language, 'rtl')}</button>
+                            </div>
+                        </div>
+
+                        <Toggle label={t(readerSettings.language, 'enableCompare')} checked={readerSettings.compareMode} onChange={() => setReaderSettings({...readerSettings, compareMode: !readerSettings.compareMode})} icon={<ArrowRightLeft size={16}/>} theme={theme} />
+                        
+                        {readerSettings.compareMode && readerSettings.pageViewMode === 'double' && (
+                             <div>
+                                <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'comparisonLayout')}</label>
+                                <div className="grid grid-cols-1 gap-2">
+                                    <button onClick={() => setReaderSettings({...readerSettings, comparisonLayout: 'standard'})} className={`w-full py-2 px-3 text-xs font-bold rounded-lg border text-left transition-all ${readerSettings.comparisonLayout === 'standard' ? 'bg-primary/20 border-primary text-primary' : `${itemBg} border-transparent ${textSub} ${itemHover}`}`}>
+                                        {t(readerSettings.language, 'standardLayout')}
+                                    </button>
+                                    <button onClick={() => setReaderSettings({...readerSettings, comparisonLayout: 'swapped'})} className={`w-full py-2 px-3 text-xs font-bold rounded-lg border text-left transition-all ${readerSettings.comparisonLayout === 'swapped' ? 'bg-primary/20 border-primary text-primary' : `${itemBg} border-transparent ${textSub} ${itemHover}`}`}>
+                                        {t(readerSettings.language, 'swappedLayout')}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                     </div>
+                </Section>
+                
+                <Section title={t(readerSettings.language, 'shortcuts')} icon={<Keyboard size={14}/>} theme={theme}>
+                    <div className="space-y-3">
+                        {Object.keys(readerSettings.keybindings).map((k) => (
+                            <div key={k} className="flex items-center justify-between">
+                                <span className={`text-xs capitalize ${textSub}`}>{t(readerSettings.language, k as any) || k}</span>
+                                {recordingKey === k ? (
+                                    <div className="flex items-center gap-1">
+                                        <span className={`text-xs text-red-500 animate-pulse`}>{t(readerSettings.language, 'listening')}</span>
+                                        <button onClick={(e) => { e.stopPropagation(); setRecordingKey(null); }} className="p-1 rounded bg-zinc-200 dark:bg-zinc-700"><X size={10}/></button>
+                                    </div>
+                                ) : (
+                                    <button 
+                                        onClick={() => setRecordingKey(k as any)} 
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-mono border ${itemBg} ${textMain} ${itemHover}`}
+                                    >
+                                        {readerSettings.keybindings[k as keyof Keybindings].map(formatKey).join(', ') || t(readerSettings.language, 'clickToBind')}
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                        <button onClick={() => setReaderSettings({...readerSettings, keybindings: { nextPage: ['ArrowRight', ' '], prevPage: ['ArrowLeft'], toggleMenu: ['m'], fullscreen: ['f'] }})} className={`w-full mt-2 py-1.5 text-[10px] flex items-center justify-center gap-1 ${textSub} ${itemHover}`}>
+                            <RotateCcw size={10}/> {t(readerSettings.language, 'resetKeys')}
+                        </button>
+                    </div>
+                </Section>
+
+                <Section title="About" icon={<Info size={14}/>} theme={theme}>
+                    <div className={`text-xs space-y-2 p-2 rounded-lg ${inputBg}`}>
+                        <p className={`font-bold ${textMain}`}>Mokuro Comic Reader</p>
+                        <p className={textSub}>A modern web-based comic reader with OCR and Anki integration.</p>
+                        <div className="flex gap-2 pt-2">
+                            <a href="https://github.com/kha-white/mokuro" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Mokuro Project</a>
+                        </div>
+                    </div>
                 </Section>
             </div>
         </div>

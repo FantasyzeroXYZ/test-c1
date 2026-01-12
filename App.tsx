@@ -19,11 +19,16 @@ const App: React.FC = () => {
       comparisonLayout: 'standard',
       libraryViewMode: 'grid',
       dictionaryMode: 'panel',
+      dictionarySource: 'api',
       learningLanguage: 'en', 
       overlayStyle: 'hidden', 
       tesseractLanguage: 'eng', 
       ttsEnabled: true,
+      audioSource: 'browser',
       ttsVoiceURI: '',
+      ttsRate: 1,
+      ttsPitch: 1,
+      ttsVolume: 1,
       segmentationMethod: 'browser',
       webSearchEngine: 'google',
       webSearchMode: 'iframe',
@@ -32,12 +37,16 @@ const App: React.FC = () => {
           prevPage: ['ArrowLeft'],
           toggleMenu: ['m'],
           fullscreen: ['f']
-      }
+      },
+      ankiBoldText: true,
+      popupFontSize: 16,
+      copyToClipboard: false
     };
 
     if (saved) {
         try {
             const parsed = JSON.parse(saved);
+            // Migrations
             if ('dictionaryLanguage' in parsed) {
                 parsed.learningLanguage = parsed.dictionaryLanguage;
                 delete parsed.dictionaryLanguage;

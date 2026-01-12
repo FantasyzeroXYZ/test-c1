@@ -1,12 +1,34 @@
 
 
+export const SUPPORTED_LANGUAGES = [
+  { code: 'en', name: 'English (EN)' },
+  { code: 'zh', name: 'Chinese (ZH)' },
+  { code: 'ja', name: 'Japanese (JP)' },
+  { code: 'ko', name: 'Korean (KO)' },
+  { code: 'fr', name: 'French (FR)' },
+  { code: 'de', name: 'German (DE)' },
+  { code: 'es', name: 'Spanish (ES)' },
+  { code: 'it', name: 'Italian (IT)' },
+  { code: 'ru', name: 'Russian (RU)' },
+  { code: 'pt', name: 'Portuguese (PT)' },
+] as const;
+
 export interface Bookmark {
   id: string;
   pageIndex: number;
+  endPageIndex?: number; // Added for range bookmarks
   title?: string;
   note?: string;
   color: 'blue' | 'green' | 'red' | 'yellow' | 'purple';
   createdAt: number;
+  crops?: Array<{ id: string; name?: string; x: number; y: number; w: number; h: number }>; // Updated for named/id regions
+}
+
+export interface ReadingStats {
+    totalTime: number; // in milliseconds
+    lastRead: number;
+    sessions: number;
+    dailyTime: Record<string, number>; // YYYY-MM-DD -> ms
 }
 
 export interface Book {
@@ -22,7 +44,9 @@ export interface Book {
   bookmarks?: Bookmark[];
   addedAt: number;
   progress?: number;
-  language?: string; // Added: Book specific language
+  language?: string; 
+  ankiTags?: string;
+  stats?: ReadingStats; // Added
 }
 
 export interface MokuroPage {
@@ -49,9 +73,9 @@ export interface AnkiSettingsType {
   sentenceField: string;
   wordField: string;
   meaningField: string;
-  imageField: string;           // Screenshot of original
-  translatedImageField: string; // Screenshot of translated (if available)
-  translationField: string;     // Text translation
+  imageField: string;           
+  translatedImageField: string; 
+  translationField: string;     
   audioField: string;
   tags: string;
 }
@@ -61,7 +85,7 @@ export type PageViewMode = 'single' | 'double' | 'webtoon';
 export type ReadingDirection = 'ltr' | 'rtl';
 export type DictionaryMode = 'panel' | 'popup';
 export type ThemeMode = 'light' | 'dark';
-// Updated WebSearchEngine types to include Encyclopedia
+
 export type WebSearchEngine = 
   | 'google' | 'bing' | 'duckduckgo' | 'baidu' 
   | 'bing_trans' | 'deepl' | 'baidu_trans' | 'youdao_trans'
@@ -74,6 +98,14 @@ export interface Keybindings {
   fullscreen: string[];
 }
 
+export interface LocalDictionary {
+    id: string;
+    name: string;
+    count: number;
+    targetLang: string | 'universal'; 
+    priority?: number; // Added
+}
+
 export interface ReaderSettings {
   pageViewMode: PageViewMode;
   readingDirection: ReadingDirection;
@@ -83,13 +115,21 @@ export interface ReaderSettings {
   comparisonLayout: 'standard' | 'swapped';
   libraryViewMode: 'grid' | 'list';
   dictionaryMode: DictionaryMode;
+  dictionarySource: 'api' | 'local';
   learningLanguage: 'en' | 'zh' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'it' | 'ru' | 'pt'; 
-  segmentationMethod: 'browser' | 'space'; 
+  segmentationMethod: 'browser' | 'space' | 'kuromoji' | 'external'; 
   overlayStyle: 'hidden' | 'outline' | 'fill'; 
   tesseractLanguage: string;
   ttsEnabled: boolean; 
-  ttsVoiceURI: string; 
+  audioSource: 'browser' | 'external'; // Added
+  ttsVoiceURI: string;
+  ttsRate: number; // Added
+  ttsPitch: number; // Added
+  ttsVolume: number; // Added
   webSearchEngine: WebSearchEngine; 
   webSearchMode: 'iframe' | 'external';
   keybindings: Keybindings;
+  ankiBoldText: boolean; 
+  popupFontSize: number; 
+  copyToClipboard: boolean;
 }

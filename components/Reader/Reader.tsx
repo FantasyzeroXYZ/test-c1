@@ -1,12 +1,14 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Book, MokuroData, AnkiSettingsType, ReaderSettings, MokuroPage, Bookmark } from '../../types';
 import { initZip, loadImage, parseMokuro } from '../../services/parser';
-import { updateBookProgress, updateBookBookmarks, openDB } from '../../services/db'; 
+import { updateBookProgress, updateBookBookmarks, updateBookStats, openDB } from '../../services/db'; 
 import { runTesseract } from '../../services/ocr';
 import ImageViewer, { PageContent } from './ImageViewer';
 import DictionaryPanel from './DictionaryPanel';
 import Sidebar from './Sidebar';
+import BookmarksSidebar from './BookmarksSidebar';
 import BookmarkModal from './BookmarkModal';
 import { ChevronLeft, ChevronRight, Settings, ArrowLeft, Maximize2, Minimize2, Search, Loader2, Crop, Bookmark as BookmarkIcon, ZoomIn, X, Minus, Plus } from 'lucide-react';
 import JSZip from 'jszip';
@@ -44,7 +46,10 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
   const [currentPage, setCurrentPage] = useState(book.progress || 0);
   const [scale, setScale] = useState(1);
   const [showOcr, setShowOcr] = useState(true);
-  const [showSidebar, setShowSidebar] = useState(false);
+  
+  // Sidebars
+  const [activeSidebar, setActiveSidebar] = useState<'none' | 'settings' | 'bookmarks'>('none');
+
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [isLeftActive, setIsLeftActive] = useState(false);
   const [isRightActive, setIsRightActive] = useState(false);
@@ -56,9 +61,6 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
       translatedImageBase64?: string
   } | null>(null);
 
-  const [isEditingPage, setIsEditingPage] = useState(false);
-  const [pageInput, setPageInput] = useState('');
-
   const [isOcrSelecting, setIsOcrSelecting] = useState(false);
   const [isOcrLoading, setIsOcrLoading] = useState(false);
   const ocrCancelledRef = useRef(false);
@@ -68,8 +70,41 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
 
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(book.bookmarks || []);
   const [editingBookmark, setEditingBookmark] = useState<Bookmark | null>(null);
+  const [isCroppingForBookmark, setIsCroppingForBookmark] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Time Tracking
+  const readingStartTime = useRef(Date.now());
+  const lastTimeUpdate = useRef(Date.now());
+
+  useEffect(() => {
+      // Update reading time every minute
+      const interval = setInterval(() => {
+          const now = Date.now();
+          const delta = now - lastTimeUpdate.current;
+          updateBookStats(book.id, delta);
+          lastTimeUpdate.current = now;
+      }, 60000);
+
+      const handleVisibility = () => {
+          if (document.hidden) {
+              const now = Date.now();
+              updateBookStats(book.id, now - lastTimeUpdate.current);
+              lastTimeUpdate.current = now;
+          } else {
+              lastTimeUpdate.current = Date.now();
+          }
+      };
+      document.addEventListener('visibilitychange', handleVisibility);
+
+      return () => {
+          clearInterval(interval);
+          document.removeEventListener('visibilitychange', handleVisibility);
+          updateBookStats(book.id, Date.now() - lastTimeUpdate.current);
+      };
+  }, [book.id]);
 
   const [isIOS, setIsIOS] = useState(false);
   useEffect(() => {
@@ -233,7 +268,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
                           settings.readingDirection === 'ltr' ? nextPage() : prevPage();
                           lastGamepadAction.current = now;
                       } else if (matches(keys.toggleMenu)) {
-                          setShowSidebar(prev => !prev);
+                          setActiveSidebar(prev => prev === 'none' ? 'settings' : 'none');
                           lastGamepadAction.current = now;
                       } else if (matches(keys.fullscreen)) {
                           toggleFullscreen();
@@ -250,9 +285,14 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
 
   useEffect(() => {
       const handleKey = (e: KeyboardEvent) => {
-          if (isEditingPage) return;
-          if (isOcrSelecting) {
-              if (e.key === 'Escape') setIsOcrSelecting(false);
+          if (isOcrSelecting || isCroppingForBookmark) {
+              if (e.key === 'Escape') {
+                  setIsOcrSelecting(false);
+                  setIsCroppingForBookmark(false);
+                  if (isCroppingForBookmark && editingBookmark) {
+                      setEditingBookmark({...editingBookmark}); 
+                  }
+              }
               return;
           }
 
@@ -273,26 +313,17 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
                   settings.readingDirection === 'ltr' ? prevPage() : nextPage();
               }
           }
-          else if (keys.toggleMenu.includes(e.key)) setShowSidebar(prev => !prev);
+          else if (keys.toggleMenu.includes(e.key)) setActiveSidebar(prev => prev === 'none' ? 'settings' : 'none');
           else if (keys.fullscreen.includes(e.key)) toggleFullscreen();
       };
       const handleFs = () => setIsFullscreen(!!document.fullscreenElement);
       window.addEventListener('keydown', handleKey);
       document.addEventListener('fullscreenchange', handleFs);
       return () => { window.removeEventListener('keydown', handleKey); document.removeEventListener('fullscreenchange', handleFs); };
-  }, [nextPage, prevPage, settings, isEditingPage, isOcrSelecting]);
+  }, [nextPage, prevPage, settings, isOcrSelecting, isCroppingForBookmark]);
 
   const handleLeftClick = settings.readingDirection === 'ltr' ? prevPage : nextPage;
   const handleRightClick = settings.readingDirection === 'ltr' ? nextPage : prevPage;
-
-  const handlePageSubmit = (e: React.FormEvent) => {
-      e.preventDefault();
-      const p = parseInt(pageInput);
-      if (!isNaN(p) && p >= 1 && p <= imageFiles.length) {
-          setCurrentPage(p - 1);
-      }
-      setIsEditingPage(false);
-  };
 
   const captureCurrentPageImage = async () => {
       if (!currentPagesData[0]) return undefined;
@@ -322,7 +353,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
   };
 
   const handleOcrClick = async (text: string) => {
-      if (!showOcr) return; // Fix: Block OCR if disabled
+      if (!showOcr) return; 
       const imgBase64 = await captureCurrentPageImage();
       const transImgBase64 = await captureTranslatedPageImage();
       setDictQuery({ 
@@ -333,7 +364,26 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
       });
   };
 
-  const handleCropOcr = async (dataUrl: string) => {
+  const handleCrop = async (dataUrl: string, box: {x:number, y:number, w:number, h:number}) => {
+      if (isCroppingForBookmark && editingBookmark) {
+          // Add to bookmark crops
+          const currentCrops = editingBookmark.crops || [];
+          const newCrop = {
+              id: generateUUID(),
+              name: `${t(settings.language, 'region')} ${currentCrops.length + 1}`,
+              ...box
+          };
+          const updatedBookmark = {
+              ...editingBookmark,
+              crops: [...currentCrops, newCrop]
+          };
+          setEditingBookmark(updatedBookmark);
+          setIsCroppingForBookmark(false);
+          setIsOcrSelecting(false); // Stop selection mode
+          return;
+      }
+
+      // Normal OCR Crop Logic
       setIsOcrSelecting(false);
       setIsOcrLoading(true);
       ocrCancelledRef.current = false;
@@ -364,17 +414,13 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
   };
 
   const handleAddBookmark = () => {
-      const existing = bookmarks.find(b => b.pageIndex === currentPage);
-      if (existing) {
-          setEditingBookmark(existing);
-      } else {
-          setEditingBookmark({
-              id: generateUUID(),
-              pageIndex: currentPage,
-              color: 'blue',
-              createdAt: Date.now()
-          });
-      }
+      // Always add a new bookmark
+      setEditingBookmark({
+          id: generateUUID(),
+          pageIndex: currentPage,
+          color: 'blue',
+          createdAt: Date.now()
+      });
   };
 
   const handleSaveBookmark = async (bm: Bookmark) => {
@@ -398,7 +444,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
 
   const jumpToPage = (idx: number) => {
       setCurrentPage(idx);
-      setShowSidebar(false);
+      setActiveSidebar('none');
   };
 
   const toggleOcrSelection = () => {
@@ -416,6 +462,35 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
       setIsMagnifying(false);
   };
 
+  // Helper to extract image data from box
+  const extractImageFromBox = async (box: {x: number, y: number, w: number, h: number}, returnBlob = false) => {
+      if(!currentPagesData[0]) return;
+      const img = new Image();
+      img.src = currentPagesData[0].url;
+      await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = box.w;
+      canvas.height = box.h;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+          ctx.drawImage(img, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+          const dataUrl = canvas.toDataURL('image/png');
+          if (returnBlob) return dataUrl;
+
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          a.download = `crop_${Date.now()}.png`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+      }
+  };
+
+  const handlePreviewCrop = async (box: {x: number, y: number, w: number, h: number}) => {
+      const dataUrl = await extractImageFromBox(box, true);
+      if (dataUrl) setPreviewImage(dataUrl as string);
+  };
+
   return (
     <div ref={containerRef} className={`fixed inset-0 flex flex-col w-screen overflow-hidden ${isIOS ? 'h-[100dvh]' : 'h-screen'} ${settings.theme === 'light' ? 'bg-zinc-100' : 'bg-black'}`}>
         <div className={`absolute top-0 left-0 right-0 h-14 z-40 flex items-center justify-between px-4 pointer-events-none hover:opacity-100 transition-opacity group ${settings.theme === 'light' ? 'bg-gradient-to-b from-zinc-200/90 to-transparent text-zinc-800' : 'bg-gradient-to-b from-black/80 to-transparent text-white'}`}>
@@ -425,24 +500,12 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
             
             <div className={`pointer-events-auto text-sm font-medium drop-shadow-md px-3 py-1 rounded-full backdrop-blur-sm flex items-center gap-2 ${settings.theme === 'light' ? 'bg-white/50 text-zinc-900' : 'bg-black/40 text-white/80'}`}>
                 {isOcrLoading && <Loader2 size={14} className="animate-spin text-accent"/>}
-                {settings.pageViewMode === 'webtoon' ? (
-                    <span>{imageFiles.length > 0 ? `${currentPage + 1} / ${imageFiles.length}` : 'Loading...'}</span>
-                ) : isEditingPage ? (
-                    <form onSubmit={handlePageSubmit} className="inline-block w-20">
-                        <input 
-                            autoFocus
-                            type="number" 
-                            value={pageInput}
-                            onChange={e => setPageInput(e.target.value)}
-                            onBlur={() => setIsEditingPage(false)}
-                            className="w-full bg-transparent border-b border-current text-center outline-none"
-                        />
-                    </form>
-                ) : (
-                    <span onClick={() => { setIsEditingPage(true); setPageInput((currentPage + 1).toString()); }} className="cursor-pointer hover:opacity-75">
-                        {imageFiles.length > 0 ? `${currentPage + 1} / ${imageFiles.length}` : 'Loading...'}
-                    </span>
-                )}
+                <span 
+                    onClick={() => setActiveSidebar(prev => prev === 'bookmarks' ? 'none' : 'bookmarks')} 
+                    className="cursor-pointer hover:opacity-75"
+                >
+                    {imageFiles.length > 0 ? `${currentPage + 1}` : 'Loading...'}
+                </span>
             </div>
 
             <div className="flex items-center gap-2 pointer-events-auto">
@@ -469,7 +532,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
                  </button>
                  <button onPointerUp={() => setDictQuery({text: '', context: ''})} className={`p-2 rounded-full backdrop-blur-sm pointer-events-auto ${settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}><Search size={20} /></button>
                  <button onClick={toggleFullscreen} className={`p-2 rounded-full backdrop-blur-sm pointer-events-auto ${settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}>{isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}</button>
-                <button onClick={() => setShowSidebar(true)} className={`p-2 rounded-full backdrop-blur-sm pointer-events-auto ${settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}><Settings size={20} /></button>
+                <button onClick={() => setActiveSidebar(prev => prev === 'settings' ? 'none' : 'settings')} className={`p-2 rounded-full backdrop-blur-sm pointer-events-auto ${settings.theme === 'light' ? 'text-zinc-700 bg-white/50 hover:bg-white' : 'text-white/80 hover:text-white bg-black/40'}`}><Settings size={20} /></button>
             </div>
         </div>
         
@@ -489,7 +552,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
                 onOcrClick={(text) => handleOcrClick(text)}
                 scale={scale} setScale={setScale}
                 readingDirection={settings.readingDirection}
-                settings={effectiveSettings} // Use effective settings here
+                settings={effectiveSettings} 
                 pages={currentPagesData}
                 zip={zip} imageFiles={imageFiles}
                 translatedZip={translatedZip} translatedImageFiles={translatedImageFiles}
@@ -498,7 +561,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
                 currentPage={currentPage}
                 onPageChange={handleWebtoonPageChange}
                 isSelecting={isOcrSelecting}
-                onCrop={handleCropOcr}
+                onCrop={handleCrop}
                 highlightOcr={false} 
                 isMagnifying={isMagnifying}
                 magnifierLevel={magnifierLevel}
@@ -520,35 +583,60 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
         {/* Progress bar with bookmark ticks */}
         <div className={`absolute bottom-0 left-0 right-0 h-1 pointer-events-none group z-40 ${settings.theme === 'light' ? 'bg-zinc-300' : 'bg-zinc-800'}`}>
             <div className="h-full bg-primary/60" style={{ width: `${((currentPage + 1) / imageFiles.length) * 100}%` }}></div>
-            {bookmarks.map(bm => (
-                <div 
-                    key={bm.id} 
-                    className={`absolute bottom-0 w-1.5 h-3 cursor-pointer pointer-events-auto transform -translate-y-1 hover:h-4 transition-all ${
-                        bm.color === 'red' ? 'bg-red-500' : 
-                        bm.color === 'green' ? 'bg-green-500' : 
-                        bm.color === 'yellow' ? 'bg-yellow-500' : 
-                        bm.color === 'purple' ? 'bg-purple-500' : 'bg-blue-500'
-                    }`}
-                    style={{ left: `${(bm.pageIndex / imageFiles.length) * 100}%` }}
-                    title={bm.title || `Page ${bm.pageIndex + 1}`}
-                    onPointerUp={(e) => {
-                        e.stopPropagation();
-                        setCurrentPage(bm.pageIndex);
-                        setEditingBookmark(bm); // Trigger editor when clicking tick
-                    }}
-                />
-            ))}
+            {bookmarks.map(bm => {
+                const startPct = (bm.pageIndex / imageFiles.length) * 100;
+                const endPct = bm.endPageIndex ? (bm.endPageIndex / imageFiles.length) * 100 : startPct;
+                const widthPct = Math.max(0.5, endPct - startPct); 
+
+                return (
+                    <div 
+                        key={bm.id} 
+                        className={`absolute bottom-0 h-3 cursor-pointer pointer-events-auto transform -translate-y-1 hover:h-4 transition-all opacity-80 hover:opacity-100 ${
+                            bm.color === 'red' ? 'bg-red-500' : 
+                            bm.color === 'green' ? 'bg-green-500' : 
+                            bm.color === 'yellow' ? 'bg-yellow-500' : 
+                            bm.color === 'purple' ? 'bg-purple-500' : 'bg-blue-500'
+                        }`}
+                        style={{ 
+                            left: `${startPct}%`, 
+                            width: bm.endPageIndex ? `${widthPct}%` : '6px'
+                        }}
+                        title={bm.title || (bm.endPageIndex ? `Pages ${bm.pageIndex+1}-${bm.endPageIndex+1}` : `Page ${bm.pageIndex + 1}`)}
+                        onPointerUp={(e) => {
+                            e.stopPropagation();
+                            setCurrentPage(bm.pageIndex);
+                            setEditingBookmark(bm); 
+                        }}
+                    />
+                );
+            })}
         </div>
 
         <Sidebar 
-            isOpen={showSidebar} onClose={() => setShowSidebar(false)}
+            isOpen={activeSidebar === 'settings'} 
+            onClose={() => setActiveSidebar('none')}
             book={book} onBookUpdate={refreshBookData}
             showOcr={showOcr} setShowOcr={setShowOcr}
             ankiSettings={ankiSettings} setAnkiSettings={setAnkiSettings}
-            readerSettings={effectiveSettings} setReaderSettings={setSettings} // Pass effective settings to display
-            bookmarks={bookmarks} onJumpToPage={jumpToPage} onEditBookmark={setEditingBookmark}
-            onDeleteBookmark={handleDeleteBookmark}
+            readerSettings={effectiveSettings} setReaderSettings={setSettings} 
+            // Bookmarks management moved to specific sidebar, but keeping API for potential direct interactions if needed
+            bookmarks={bookmarks} onJumpToPage={jumpToPage} onEditBookmark={setEditingBookmark} onDeleteBookmark={handleDeleteBookmark}
         />
+
+        <BookmarksSidebar
+            isOpen={activeSidebar === 'bookmarks'}
+            onClose={() => setActiveSidebar('none')}
+            book={book}
+            bookmarks={bookmarks}
+            mokuroData={mokuroData}
+            currentPage={currentPage}
+            totalPages={imageFiles.length}
+            onJumpToPage={jumpToPage}
+            onEditBookmark={setEditingBookmark}
+            onDeleteBookmark={handleDeleteBookmark}
+            settings={effectiveSettings}
+        />
+
         {settings.dictionaryMode !== 'popup' && (
             <DictionaryPanel 
                 isOpen={!!dictQuery} 
@@ -560,18 +648,39 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
                 }}
                 onClose={() => setDictQuery(null)} 
                 ankiSettings={ankiSettings} 
-                settings={effectiveSettings} // Use effective settings here
+                settings={effectiveSettings}
+                onUpdateSettings={setSettings}
             />
         )}
 
-        {editingBookmark && (
+        {/* Bookmark Modal */}
+        {editingBookmark && !isCroppingForBookmark && (
             <BookmarkModal 
                 bookmark={editingBookmark} 
                 language={settings.language}
+                theme={settings.theme}
                 onSave={handleSaveBookmark}
                 onDelete={handleDeleteBookmark}
                 onClose={() => setEditingBookmark(null)}
+                onAddCrop={() => {
+                    setIsCroppingForBookmark(true);
+                    setIsOcrSelecting(true); // Re-use OCR overlay logic
+                }}
+                onDownloadCrop={extractImageFromBox}
+                onPreviewCrop={handlePreviewCrop}
             />
+        )}
+
+        {/* Image Preview Modal */}
+        {previewImage && (
+            <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={() => setPreviewImage(null)}>
+                <div className="relative max-w-4xl max-h-[90vh] overflow-auto rounded-lg shadow-2xl">
+                    <img src={previewImage} alt="Preview" className="block max-w-full h-auto" />
+                    <button onClick={() => setPreviewImage(null)} className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors">
+                        <X size={20} />
+                    </button>
+                </div>
+            </div>
         )}
     </div>
   );

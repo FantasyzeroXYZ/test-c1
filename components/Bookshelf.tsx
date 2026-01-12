@@ -1,9 +1,8 @@
-
 import React, { useState, useEffect } from 'react';
 import { Book, ReaderSettings, AnkiSettingsType } from '../types';
-import { getAllBooks, addBook, deleteBook, updateBookMokuro, updateBookTranslatedFile, updateBookTitle, updateBookCover, updateBookFile, updateBookLanguage } from '../services/db';
+import { getAllBooks, addBook, deleteBook, updateBookMokuro, updateBookTranslatedFile, updateBookTitle, updateBookCover, updateBookFile, updateBookLanguage, updateBookAnkiTags } from '../services/db';
 import { extractCoverImage } from '../services/parser';
-import { Plus, Trash2, BookOpen, Upload, FileText, Settings, Maximize2, Minimize2, Globe, Layout, X, Grid, List, Edit2, Save, Download, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, BookOpen, Upload, FileText, Settings, Maximize2, Minimize2, Globe, Layout, X, Grid, List, Edit2, Save, Download, RefreshCw, Tag, FileJson, Database, BarChart2, Calendar, Clock, Activity } from 'lucide-react';
 import { t } from '../services/i18n';
 import Sidebar from './Reader/Sidebar'; 
 
@@ -33,7 +32,11 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
   const [dragActive, setDragActive] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
   const [showSettings, setShowSettings] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   
+  // Specific book for stats view (null means total stats)
+  const [statsBook, setStatsBook] = useState<Book | null>(null);
+
   // Add Modal State
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -44,6 +47,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
   
   // Edit Existing Book State
   const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [editAnkiTags, setEditAnkiTags] = useState(''); // New State
 
   useEffect(() => {
     loadBooks();
@@ -77,6 +81,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
         setEditCoverBlob(coverBlob);
         setEditCover(coverBlob ? URL.createObjectURL(coverBlob) : null);
         setEditLanguage('');
+        setEditAnkiTags('');
     } catch (e) {
         alert("Error loading file: " + e);
     } finally {
@@ -97,7 +102,8 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
             file: pendingFile,
             addedAt: Date.now(),
             progress: 0,
-            language: editLanguage || undefined
+            language: editLanguage || undefined,
+            ankiTags: editAnkiTags || undefined
         };
         await addBook(newBook);
         setPendingFile(null);
@@ -117,6 +123,13 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
       setEditCover(book.coverUrl);
       setEditCoverBlob(book.coverBlob || null);
       setEditLanguage(book.language || '');
+      setEditAnkiTags(book.ankiTags || '');
+  };
+
+  const handleStatsClick = (e: React.MouseEvent, book: Book) => {
+      e.stopPropagation();
+      setStatsBook(book);
+      setShowStats(true);
   };
 
   const handleEditCoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -154,6 +167,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
               await updateBookCover(editingBook.id, editCoverBlob, url);
           }
           await updateBookLanguage(editingBook.id, editLanguage);
+          await updateBookAnkiTags(editingBook.id, editAnkiTags);
           setEditingBook(null);
           await loadBooks();
       } catch (e) {
@@ -161,6 +175,46 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
       } finally {
           setLoading(false);
       }
+  };
+
+  const handleExportBookmarks = (type: 'json' | 'md' | 'anki') => {
+      if (!editingBook || !editingBook.bookmarks) return;
+      
+      let content = '';
+      const bms = editingBook.bookmarks.sort((a,b) => a.pageIndex - b.pageIndex);
+
+      if (type === 'json') {
+          content = JSON.stringify(bms, null, 2);
+          downloadFile(content, `${editingBook.title}_bookmarks.json`, 'application/json');
+      } else if (type === 'md') {
+          content = `# Bookmarks: ${editingBook.title}\n\n`;
+          bms.forEach(bm => {
+              content += `## Page ${bm.pageIndex + 1}${bm.endPageIndex ? ` - ${bm.endPageIndex + 1}` : ''}\n`;
+              if(bm.title) content += `**${bm.title}**\n\n`;
+              if(bm.note) content += `${bm.note}\n\n`;
+              content += `---\n`;
+          });
+          downloadFile(content, `${editingBook.title}_bookmarks.md`, 'text/markdown');
+      } else if (type === 'anki') {
+          // Format: Title | Page | Note
+          bms.forEach(bm => {
+              const p = bm.endPageIndex ? `${bm.pageIndex+1}-${bm.endPageIndex+1}` : `${bm.pageIndex+1}`;
+              content += `${bm.title || ''}|${p}|${bm.note || ''}\n`;
+          });
+          downloadFile(content, `${editingBook.title}_anki_import.txt`, 'text/plain');
+      }
+  };
+
+  const downloadFile = (content: string, filename: string, type: string) => {
+      const blob = new Blob([content], { type });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
   };
   // ---------------------
 
@@ -219,6 +273,39 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
 
   const isDark = settings.theme === 'dark';
 
+  const formatTime = (ms: number) => {
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      return `${h}h ${m}m`;
+  };
+
+  const getTotalStats = () => {
+      let totalTime = 0;
+      let totalSessions = 0;
+      let booksStarted = 0;
+      books.forEach(b => {
+          if (b.stats) {
+              totalTime += b.stats.totalTime;
+              totalSessions += b.stats.sessions;
+          }
+          if ((b.progress || 0) > 0) booksStarted++;
+      });
+      return { totalTime, totalSessions, booksStarted };
+  };
+
+  const getStatsToDisplay = () => {
+      if (statsBook) {
+          return {
+              totalTime: statsBook.stats?.totalTime || 0,
+              totalSessions: statsBook.stats?.sessions || 0,
+              lastRead: statsBook.stats?.lastRead || 0
+          };
+      }
+      return getTotalStats();
+  };
+
+  const currentStats = getStatsToDisplay();
+
   return (
     <div className={`min-h-screen p-4 md:p-8 ${isDark ? 'text-zinc-100' : 'text-zinc-900'}`} onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
       <header className="mb-8 flex justify-between items-center">
@@ -229,6 +316,9 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
             <p className={`mt-2 text-sm md:text-base ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>{t(settings.language, 'librarySubtitle')}</p>
         </div>
         <div className="flex gap-4">
+            <button onClick={() => { setStatsBook(null); setShowStats(true); }} className={`p-2 rounded-lg transition-colors ${isDark ? 'text-zinc-400 hover:text-white bg-surfaceLight' : 'text-zinc-500 hover:text-black bg-white border border-zinc-200 shadow-sm'}`} title="Statistics">
+                <BarChart2 size={20} />
+            </button>
             <button onClick={toggleViewMode} className={`p-2 rounded-lg transition-colors ${isDark ? 'text-zinc-400 hover:text-white bg-surfaceLight' : 'text-zinc-500 hover:text-black bg-white border border-zinc-200 shadow-sm'}`} title={settings.libraryViewMode === 'grid' ? t(settings.language, 'listView') : t(settings.language, 'gridView')}>
                 {settings.libraryViewMode === 'grid' ? <List size={20} /> : <Grid size={20} />}
             </button>
@@ -247,19 +337,49 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
         </div>
       </header>
 
-      {dragActive && (
-          <div className="fixed inset-0 bg-primary/20 backdrop-blur-sm z-50 flex items-center justify-center border-4 border-dashed border-primary m-4 rounded-xl">
-              <div className="text-2xl font-bold text-primary animate-pulse">Drop .zip or .cbz file here</div>
+      {/* Stats Modal */}
+      {showStats && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+              <div className={`border rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200 ${isDark ? 'bg-surfaceLight border-white/10' : 'bg-white border-zinc-200'}`}>
+                  <div className={`p-4 border-b flex justify-between items-center ${isDark ? 'border-white/5 bg-black/20' : 'border-zinc-100 bg-zinc-50'}`}>
+                      <h2 className={`font-bold text-lg ${isDark ? 'text-zinc-100' : 'text-zinc-800'}`}>
+                          {statsBook ? `${t(settings.language, 'statSingleBook')}: ${statsBook.title}` : t(settings.language, 'statTotal')}
+                      </h2>
+                      <button onClick={() => { setShowStats(false); setStatsBook(null); }} className={`p-1 rounded-full ${isDark ? 'hover:bg-white/10 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-500'}`}><X size={20}/></button>
+                  </div>
+                  <div className="p-6 grid grid-cols-2 gap-4">
+                      <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                          <Clock size={24} className="text-primary"/>
+                          <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{formatTime(currentStats.totalTime)}</span>
+                          <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'totalTime')}</span>
+                      </div>
+                      <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                          <Activity size={24} className="text-accent"/>
+                          <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{currentStats.totalSessions}</span>
+                          <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'sessions')}</span>
+                      </div>
+                      
+                      {statsBook ? (
+                          <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 col-span-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                              <Calendar size={24} className="text-green-500"/>
+                              <span className={`text-xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>
+                                  {'lastRead' in currentStats && currentStats.lastRead ? new Date(currentStats.lastRead).toLocaleDateString() : '-'}
+                              </span>
+                              <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'lastRead')}</span>
+                          </div>
+                      ) : (
+                          <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 col-span-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                              <BookOpen size={24} className="text-green-500"/>
+                              <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{(currentStats as any).booksStarted} / {books.length}</span>
+                              <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'booksStarted')}</span>
+                          </div>
+                      )}
+                  </div>
+              </div>
           </div>
       )}
 
-      {loading && !pendingFile && !editingBook && (
-          <div className="flex justify-center my-12">
-              <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
-          </div>
-      )}
-
-      {/* Add/Edit Modal */}
+      {/* Edit Modal (unchanged logic, just rendering) */}
       {(pendingFile || editingBook) && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
               <div className={`border rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200 ${isDark ? 'bg-surfaceLight border-white/10' : 'bg-white border-zinc-200'}`}>
@@ -267,7 +387,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                       <h2 className={`font-bold text-lg ${isDark ? 'text-zinc-100' : 'text-zinc-800'}`}>{pendingFile ? t(settings.language, 'editBook') : t(settings.language, 'editBookDetails')}</h2>
                       <button onClick={() => { setPendingFile(null); setEditingBook(null); }} className={`p-1 rounded-full ${isDark ? 'hover:bg-white/10 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-500'}`}><X size={20}/></button>
                   </div>
-                  <div className="p-6 space-y-6">
+                  <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto custom-scrollbar">
                       <div className="flex gap-4">
                           <div className={`w-32 aspect-[2/3] rounded-lg overflow-hidden border flex-shrink-0 relative group ${isDark ? 'bg-black/40 border-white/10' : 'bg-zinc-100 border-zinc-200'}`}>
                               {editCover ? <img src={editCover} className="w-full h-full object-cover"/> : <div className="w-full h-full flex items-center justify-center text-zinc-500"><BookOpen/></div>}
@@ -309,6 +429,20 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                                 </select>
                               </div>
 
+                              <div>
+                                <label className="text-[10px] uppercase font-bold text-zinc-500 mb-1 block">{t(settings.language, 'ankiTags')}</label>
+                                <div className={`flex items-center gap-2 border rounded-lg px-3 py-2 ${isDark ? 'bg-black/40 border-white/10' : 'bg-white border-zinc-300'}`}>
+                                    <Tag size={12} className="text-zinc-500"/>
+                                    <input 
+                                        type="text" 
+                                        value={editAnkiTags} 
+                                        onChange={(e) => setEditAnkiTags(e.target.value)}
+                                        className={`w-full bg-transparent text-sm outline-none ${isDark ? 'text-white' : 'text-zinc-900'}`}
+                                        placeholder="tag1, tag2" 
+                                    />
+                                </div>
+                              </div>
+
                               {pendingFile && (
                                   <div>
                                       <label className="text-[10px] uppercase font-bold text-zinc-500 mb-1 block">{t(settings.language, 'bookType')}</label>
@@ -329,7 +463,22 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                                   </div>
                               )}
                               {editingBook && (
-                                  <div className="space-y-2">
+                                  <div className="space-y-4">
+                                     <div>
+                                         <label className="text-[10px] uppercase font-bold text-zinc-500 mb-2 block">{t(settings.language, 'exportBookmarks')}</label>
+                                         <div className="flex gap-2">
+                                            <button onClick={() => handleExportBookmarks('json')} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 border ${isDark ? 'bg-white/5 border-white/10 hover:bg-white/10 text-zinc-300' : 'bg-zinc-100 border-zinc-200 hover:bg-zinc-200 text-zinc-700'}`}>
+                                                <FileJson size={12}/> JSON
+                                            </button>
+                                            <button onClick={() => handleExportBookmarks('md')} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 border ${isDark ? 'bg-white/5 border-white/10 hover:bg-white/10 text-zinc-300' : 'bg-zinc-100 border-zinc-200 hover:bg-zinc-200 text-zinc-700'}`}>
+                                                <FileText size={12}/> MD
+                                            </button>
+                                            <button onClick={() => handleExportBookmarks('anki')} className={`flex-1 py-1.5 rounded-lg text-xs flex items-center justify-center gap-1 border ${isDark ? 'bg-white/5 border-white/10 hover:bg-white/10 text-zinc-300' : 'bg-zinc-100 border-zinc-200 hover:bg-zinc-200 text-zinc-700'}`}>
+                                                <Database size={12}/> Anki
+                                            </button>
+                                         </div>
+                                     </div>
+
                                      {editCover && (
                                         <a href={editCover} download={`${editTitle}_cover.jpg`} className="flex items-center gap-2 text-xs text-primary hover:underline">
                                             <Download size={12}/> {t(settings.language, 'downloadCover')}
@@ -359,16 +508,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
           </div>
       )}
 
-      {books.length === 0 && !loading && (
-          <div className="flex flex-col items-center justify-center py-32 text-center">
-              <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-6 border ${isDark ? 'bg-surfaceLight border-white/5 text-zinc-600' : 'bg-white border-zinc-200 text-zinc-300'}`}>
-                  <BookOpen size={40} />
-              </div>
-              <h2 className={`text-xl font-bold mb-2 ${isDark ? 'text-zinc-100' : 'text-zinc-800'}`}>{t(settings.language, 'emptyLibrary')}</h2>
-              <p className="text-zinc-500 max-w-xs">{t(settings.language, 'emptyLibrarySub')}</p>
-          </div>
-      )}
-
+      {/* Books Grid */}
       {settings.libraryViewMode === 'grid' ? (
         <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 md:gap-6">
             {books.map(book => (
@@ -385,6 +525,9 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                     </div> 
                     )}
                     <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        <button onClick={(e) => handleStatsClick(e, book)} className="p-1.5 md:p-2 bg-black/60 hover:bg-black/80 text-white rounded-full backdrop-blur-md shadow-lg">
+                            <BarChart2 size={14} className="md:w-4 md:h-4" />
+                        </button>
                         <button onClick={(e) => handleEditClick(e, book)} className="p-1.5 md:p-2 bg-black/60 hover:bg-black/80 text-white rounded-full backdrop-blur-md shadow-lg">
                             <Edit2 size={14} className="md:w-4 md:h-4" />
                         </button>
@@ -427,6 +570,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
           <div className="flex flex-col gap-3">
               {books.map(book => (
                   <div key={book.id} className={`group relative rounded-xl overflow-hidden shadow-md hover:shadow-xl transition-all duration-200 cursor-pointer border flex items-center p-3 gap-4 ${isDark ? 'bg-surfaceLight hover:bg-zinc-800 border-zinc-800' : 'bg-white hover:bg-zinc-50 border-zinc-200'}`} onClick={() => onOpenBook(book)}>
+                      {/* ... existing list view item content ... */}
                       <div className="h-20 w-14 relative bg-zinc-900 overflow-hidden rounded-md shrink-0">
                         {book.coverUrl ? (
                             <img src={book.coverUrl} alt={book.title} className="w-full h-full object-cover" />
@@ -467,6 +611,9 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                                 <Upload size={16} />
                                 <input type="file" accept=".mokuro" className="hidden" onChange={(e) => handleMokuroUpload(e, book.id)} />
                             </label>
+                            <button onClick={(e) => handleStatsClick(e, book)} className="p-2 text-zinc-400 hover:text-white hover:bg-white/5 rounded-full transition-colors">
+                                <BarChart2 size={16} />
+                            </button>
                             <button onClick={(e) => handleEditClick(e, book)} className="p-2 text-zinc-400 hover:text-white hover:bg-white/5 rounded-full transition-colors">
                                 <Edit2 size={16} />
                             </button>
