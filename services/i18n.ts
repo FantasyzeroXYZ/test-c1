@@ -186,6 +186,8 @@ export const translations = {
     filterColor: '筛选颜色',
     allColors: '全部颜色',
     testScript: '测试脚本连接',
+    enableExternalParams: '启用自定义参数',
+    clearCustomDef: '清空内容',
   },
   'zh-Hant': {
     library: '我的漫畫',
@@ -372,6 +374,8 @@ export const translations = {
     filterColor: '篩選顏色',
     allColors: '全部顏色',
     testScript: '測試腳本連接',
+    enableExternalParams: '啟用自定義參數',
+    clearCustomDef: '清空內容',
   },
   en: {
     library: 'My Comics',
@@ -558,6 +562,8 @@ export const translations = {
     filterColor: 'Filter Color',
     allColors: 'All Colors',
     testScript: 'Test Script Connection',
+    enableExternalParams: 'Enable Custom Params',
+    clearCustomDef: 'Clear Content',
   }
 };
 

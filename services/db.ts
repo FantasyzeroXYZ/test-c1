@@ -117,7 +117,7 @@ export const updateBookAnkiTags = async (id: string, tags: string): Promise<void
     return updateBookField(id, 'ankiTags', tags);
 }
 
-export const updateBookStats = async (id: string, timeToAdd: number): Promise<void> => {
+export const updateBookStats = async (id: string, timeToAdd: number, pagesToAdd: number = 0): Promise<void> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
@@ -134,16 +134,18 @@ export const updateBookStats = async (id: string, timeToAdd: number): Promise<vo
                     totalTime: 0,
                     sessions: 0,
                     lastRead: 0,
+                    pagesRead: 0,
                     dailyTime: {}
                 };
 
                 // Check if new session (e.g. > 30 min since last read)
-                if (now - stats.lastRead > 30 * 60 * 1000) {
+                if (now - stats.lastRead > 30 * 60 * 1000 && timeToAdd > 0) {
                     stats.sessions += 1;
                 }
 
                 stats.totalTime += timeToAdd;
                 stats.lastRead = now;
+                stats.pagesRead = (stats.pagesRead || 0) + pagesToAdd;
                 stats.dailyTime[today] = (stats.dailyTime[today] || 0) + timeToAdd;
 
                 book.stats = stats;

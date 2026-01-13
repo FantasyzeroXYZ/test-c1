@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { AnkiSettingsType, ReaderSettings, WebSearchEngine } from '../../types';
-import { Search, Plus, Loader2, BookOpen, X, ArrowRight, Volume2, ExternalLink, PenTool, Globe, Puzzle, Pin, PlayCircle, Save, Image as ImageIcon, Maximize, AppWindow, ArrowLeft, RotateCw, Monitor, Smartphone, LayoutGrid, ChevronDown, ChevronUp, Copy, BookOpenText, FileText, Clipboard, ClipboardCheck } from 'lucide-react';
+import { Search, Plus, Loader2, BookOpen, X, ArrowRight, Volume2, ExternalLink, PenTool, Globe, Puzzle, Pin, PlayCircle, Save, Image as ImageIcon, Maximize, AppWindow, ArrowLeft, RotateCw, Monitor, Smartphone, LayoutGrid, ChevronDown, ChevronUp, Copy, BookOpenText, FileText, Clipboard, ClipboardCheck, Eraser } from 'lucide-react';
 import { translations, t as trans } from '../../services/i18n';
 import { addNote } from '../../services/anki';
 import { fetchFreeDictionaryApi, searchLocalDictionaries, ApiDictionaryResponse } from '../../services/dictionary';
@@ -113,10 +113,10 @@ const DictionaryPanel: React.FC<Props> = ({
         }
       } catch (e) { segmenterRef.current = null; }
 
-      // Initialize Kuromoji if needed
+      // Initialize Kuromoji if needed with reliable CDN
       if (settings.segmentationMethod === 'kuromoji' && !kuromojiTokenizer.current) {
           try {
-              // Use jsDelivr for better CORS and reliability than GitHub Pages
+              // Use jsDelivr CDN which correctly serves the dictionary files
               const dicPath = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/";
               kuromoji.builder({ dicPath }).build((err: any, tokenizer: any) => {
                   if(err) {
@@ -125,7 +125,6 @@ const DictionaryPanel: React.FC<Props> = ({
                       kuromojiTokenizer.current = tokenizer;
                       // Trigger re-segmentation if sentence is already waiting
                       if (sentence) {
-                          // Force update locally to re-run segmentation effect
                           setSegments(prev => [...prev]); 
                       }
                   }
@@ -134,7 +133,7 @@ const DictionaryPanel: React.FC<Props> = ({
       }
 
       return () => { isMountedRef.current = false; };
-  }, [settings.segmentationMethod]); // Depend on segmentationMethod
+  }, [settings.segmentationMethod]);
 
   const requestExternalSegmentation = (text: string) => {
       return new Promise<{ segment: string, isWordLike: boolean }[]>((resolve) => {
@@ -168,20 +167,19 @@ const DictionaryPanel: React.FC<Props> = ({
                   const tokens = kuromojiTokenizer.current.tokenize(sentence);
                   setSegments(tokens.map((t: any) => ({ segment: t.surface_form, isWordLike: true })));
               } else {
-                  // Fallback while loading or if failed
+                  // Fallback while loading
                   setSegments(sentence.split(/(\s+)/).map((s) => ({ segment: s, isWordLike: /\S/.test(s) })));
               }
           } else if (settings.segmentationMethod === 'browser' && segmenterRef.current) {
               const iter = segmenterRef.current.segment(sentence);
               setSegments(Array.from(iter).map((s: any) => ({ segment: s.segment, isWordLike: s.isWordLike })));
           } else {
-              // Space default
               setSegments(sentence.split(/(\s+)/).map((s) => ({ segment: s, isWordLike: /\S/.test(s) })));
           }
       };
       
       processSegmentation();
-  }, [sentence, settings.segmentationMethod, kuromojiTokenizer.current]); // Added tokenizer dependency
+  }, [sentence, settings.segmentationMethod, kuromojiTokenizer.current]);
 
 
   useEffect(() => {
@@ -251,14 +249,12 @@ const DictionaryPanel: React.FC<Props> = ({
     }
   }, [isOpen, word, learningLanguage]);
 
-  // Push new search to history stack (App initiated)
   const pushToHistory = (term: string) => {
       const url = getSearchUrl(term);
       if (history.length > 0 && history[history.length-1] === url) return;
       setHistory([...history, url]);
   };
 
-  // Update URL in history when engine/type changes
   useEffect(() => {
       if (activeTab === 'web' && searchTerm) {
           pushToHistory(searchTerm);
@@ -298,7 +294,6 @@ const DictionaryPanel: React.FC<Props> = ({
         }
         
         if (!result && dictSource === 'api') {
-            // Fallback to API or primary if API
             result = await fetchFreeDictionaryApi(term, learningLanguage);
         }
 
@@ -314,7 +309,6 @@ const DictionaryPanel: React.FC<Props> = ({
     }
   };
 
-  // Re-fetch when source changes
   useEffect(() => {
       if (activeTab === 'dict' && searchTerm) {
           fetchDefinition(searchTerm);
@@ -325,7 +319,6 @@ const DictionaryPanel: React.FC<Props> = ({
       const actualTerm = term || searchTerm;
       if (actualTerm && actualTerm.trim()) {
           setSearchTerm(actualTerm);
-          // Check global setting for clipboard copy
           if (settings.copyToClipboard) {
               navigator.clipboard.writeText(actualTerm.trim()).catch(() => {});
           }
@@ -357,6 +350,10 @@ const DictionaryPanel: React.FC<Props> = ({
 
   const handleTabChange = (tab: 'dict' | 'web' | 'script' | 'custom') => {
       setActiveTab(tab);
+      // Clear custom definition input on tab switch
+      setCustomDef(''); 
+      setCustomImage(null);
+
       if (tab === 'script' && searchTerm && !scriptHtml) fetchFromScript(searchTerm);
       else if (tab === 'dict' && searchTerm && !data) fetchDefinition(searchTerm);
       else if (tab === 'web' && searchTerm && history.length === 0) pushToHistory(searchTerm);
@@ -367,7 +364,6 @@ const DictionaryPanel: React.FC<Props> = ({
       if (!textToSpeak) return;
 
       if (settings.audioSource === 'external') {
-          // External TTS Logic
           const id = Date.now().toString();
           const handler = (event: MessageEvent) => {
               if (event.data && event.data.type === 'MOKURO_AUDIO_RESPONSE' && event.data.id === id) {
@@ -375,19 +371,33 @@ const DictionaryPanel: React.FC<Props> = ({
                   const audioData = event.data.audioData;
                   if (audioData) {
                       new Audio(audioData).play().catch(e => console.error(e));
-                      setCurrentAudioData(audioData); // Cache for Anki
+                      setCurrentAudioData(audioData);
                   }
               }
           };
           window.addEventListener('message', handler);
-          window.postMessage({ type: 'MOKURO_AUDIO_REQUEST', text: textToSpeak, id }, '*');
           
-          // Cleanup timeout
+          // Send params if enabled
+          const msg: any = { 
+              type: 'MOKURO_AUDIO_REQUEST', 
+              text: textToSpeak, 
+              id
+          };
+          
+          if (settings.externalAudioParamsEnabled) {
+              msg.params = {
+                  rate: settings.ttsRate,
+                  pitch: settings.ttsPitch,
+                  volume: settings.ttsVolume
+              };
+          }
+
+          window.postMessage(msg, '*');
+          
           setTimeout(() => window.removeEventListener('message', handler), 5000);
           return;
       }
 
-      // Browser TTS
       if (settings.ttsVoiceURI) {
           const utt = new SpeechSynthesisUtterance(textToSpeak);
           const voice = window.speechSynthesis.getVoices().find(v => v.voiceURI === settings.ttsVoiceURI);
@@ -405,7 +415,6 @@ const DictionaryPanel: React.FC<Props> = ({
       }
   };
 
-  // ... (getSearchUrl logic remains unchanged) ...
   const getSearchUrl = (term: string) => {
       const encoded = encodeURIComponent(term);
       const engine = localEngine; 
@@ -479,7 +488,11 @@ const DictionaryPanel: React.FC<Props> = ({
       }
 
       setIsAddingToAnki(true);
-      const boldedSentence = settings.ankiBoldText ? sent.replace(term, `<b>${term}</b>`) : sent;
+      // Use bold and black for target word to ensure visibility in Anki
+      const boldedSentence = settings.ankiBoldText 
+          ? sent.replace(term, `<b style="color: black;">${term}</b>`) 
+          : sent;
+          
       try {
           await addNote({
               ...ankiSettings,
@@ -493,6 +506,12 @@ const DictionaryPanel: React.FC<Props> = ({
               audioBase64: currentAudioData || undefined // Pass cached audio if available
           });
           alert(t('addedToAnki'));
+          
+          // Clear inputs after successful add
+          if (activeTab === 'custom') {
+              setCustomDef('');
+              setCustomImage(null);
+          }
       } catch (e) {
           alert(t('failedAnki'));
       } finally {
@@ -722,6 +741,13 @@ const DictionaryPanel: React.FC<Props> = ({
                                 <FileText size={14}/>
                                 <input type="file" accept=".txt,.md" className="hidden" onChange={handleTextFileUpload} />
                             </label>
+                            <button 
+                                onClick={() => { setCustomDef(''); setCustomImage(null); }}
+                                className={`p-1.5 rounded transition-colors border ${colors.border} ${colors.inputBg} hover:opacity-80`}
+                                title={t('clearCustomDef')} 
+                            >
+                                <Eraser size={14}/>
+                            </button>
                             <button 
                                 onClick={toggleClipboardMode} 
                                 className={`p-1.5 rounded-lg transition-all ${settings.copyToClipboard ? 'bg-primary text-white shadow' : `bg-black/5 dark:bg-white/5 ${colors.textSub}`}`}

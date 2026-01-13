@@ -1,8 +1,10 @@
+
+
 import React, { useState, useEffect } from 'react';
 import { Book, ReaderSettings, AnkiSettingsType } from '../types';
 import { getAllBooks, addBook, deleteBook, updateBookMokuro, updateBookTranslatedFile, updateBookTitle, updateBookCover, updateBookFile, updateBookLanguage, updateBookAnkiTags } from '../services/db';
 import { extractCoverImage } from '../services/parser';
-import { Plus, Trash2, BookOpen, Upload, FileText, Settings, Maximize2, Minimize2, Globe, Layout, X, Grid, List, Edit2, Save, Download, RefreshCw, Tag, FileJson, Database, BarChart2, Calendar, Clock, Activity } from 'lucide-react';
+import { Plus, Trash2, BookOpen, Upload, FileText, Settings, Maximize2, Minimize2, Globe, Layout, X, Grid, List, Edit2, Save, Download, RefreshCw, Tag, FileJson, Database, BarChart2, Calendar, Clock, Activity, Book as BookIcon, Zap } from 'lucide-react';
 import { t } from '../services/i18n';
 import Sidebar from './Reader/Sidebar'; 
 
@@ -274,34 +276,95 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
   const isDark = settings.theme === 'dark';
 
   const formatTime = (ms: number) => {
+      if (ms < 60000) return "< 1m";
       const h = Math.floor(ms / 3600000);
       const m = Math.floor((ms % 3600000) / 60000);
-      return `${h}h ${m}m`;
+      return h > 0 ? `${h}h ${m}m` : `${m}m`;
   };
 
   const getTotalStats = () => {
       let totalTime = 0;
       let totalSessions = 0;
       let booksStarted = 0;
+      let totalPagesRead = 0;
+      
       books.forEach(b => {
           if (b.stats) {
               totalTime += b.stats.totalTime;
               totalSessions += b.stats.sessions;
+              totalPagesRead += b.stats.pagesRead || 0;
           }
           if ((b.progress || 0) > 0) booksStarted++;
       });
-      return { totalTime, totalSessions, booksStarted };
+      
+      return { 
+          totalTime, 
+          totalSessions, 
+          booksStarted,
+          totalPagesRead,
+          // Calculate Streak
+          streak: calculateStreak(books)
+      };
+  };
+
+  const calculateStreak = (bookList: Book[]) => {
+      // Collect all dates from all books
+      const dates = new Set<string>();
+      bookList.forEach(b => {
+          if (b.stats?.dailyTime) {
+              Object.keys(b.stats.dailyTime).forEach(d => dates.add(d));
+          }
+      });
+      
+      const sortedDates = Array.from(dates).sort().reverse();
+      if (sortedDates.length === 0) return 0;
+
+      // Check if today or yesterday is present
+      const today = new Date().toISOString().slice(0, 10);
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      
+      if (!dates.has(today) && !dates.has(yesterday)) return 0;
+
+      let streak = 0;
+      let currentCheck = new Date();
+      
+      // If we read today, start checking from today back. If not today but yesterday, start from yesterday.
+      if (!dates.has(today)) currentCheck.setDate(currentCheck.getDate() - 1);
+
+      while (true) {
+          const dateStr = currentCheck.toISOString().slice(0, 10);
+          if (dates.has(dateStr)) {
+              streak++;
+              currentCheck.setDate(currentCheck.getDate() - 1);
+          } else {
+              break;
+          }
+      }
+      return streak;
   };
 
   const getStatsToDisplay = () => {
       if (statsBook) {
+          const stats = statsBook.stats || { totalTime: 0, sessions: 0, lastRead: 0, pagesRead: 0, dailyTime: {} };
+          // Single book streak logic (days read in a row for this book)
+          // Simplified streak logic re-using global logic on single book
+          const streak = calculateStreak([statsBook]);
+          
           return {
-              totalTime: statsBook.stats?.totalTime || 0,
-              totalSessions: statsBook.stats?.sessions || 0,
-              lastRead: statsBook.stats?.lastRead || 0
+              totalTime: stats.totalTime,
+              totalSessions: stats.sessions,
+              lastRead: stats.lastRead,
+              totalPagesRead: stats.pagesRead || 0,
+              streak: streak,
+              avgSession: stats.sessions > 0 ? Math.round(stats.totalTime / stats.sessions) : 0
           };
       }
-      return getTotalStats();
+      const total = getTotalStats();
+      return {
+          ...total,
+          avgSession: total.totalSessions > 0 ? Math.round(total.totalTime / total.totalSessions) : 0,
+          avgSpeed: total.totalPagesRead > 0 ? (total.totalTime / 60000) / total.totalPagesRead : 0 // min per page
+      };
   };
 
   const currentStats = getStatsToDisplay();
@@ -310,7 +373,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
     <div className={`min-h-screen p-4 md:p-8 ${isDark ? 'text-zinc-100' : 'text-zinc-900'}`} onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
       <header className="mb-8 flex justify-between items-center">
         <div>
-            <h1 className="text-2xl md:text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-accent">
+            <h1 className="text-2xl md:text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-accent whitespace-nowrap">
               {t(settings.language, 'library')}
             </h1>
             <p className={`mt-2 text-sm md:text-base ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>{t(settings.language, 'librarySubtitle')}</p>
@@ -328,10 +391,9 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
             <button onClick={() => setShowSettings(true)} className={`p-2 rounded-lg transition-colors ${isDark ? 'text-zinc-400 hover:text-white bg-surfaceLight' : 'text-zinc-500 hover:text-black bg-white border border-zinc-200 shadow-sm'}`}>
                 <Settings size={20} />
             </button>
-            <label className="flex items-center gap-2 px-3 py-2 md:px-4 md:py-2 bg-primary hover:bg-blue-600 text-white rounded-lg cursor-pointer transition-colors shadow-lg shadow-blue-900/20 text-sm md:text-base">
+            <label className="flex items-center gap-2 px-3 py-2 bg-primary hover:bg-blue-600 text-white rounded-lg cursor-pointer transition-colors shadow-lg shadow-blue-900/20">
                 <Plus size={20} />
-                <span className="hidden md:inline">{t(settings.language, 'addBook')}</span>
-                <span className="md:hidden">Add</span>
+                {/* Text Removed as requested */}
                 <input type="file" className="hidden" accept=".zip,.cbz" onChange={(e) => handleFileSelect(e.target.files)} />
             </label>
         </div>
@@ -348,30 +410,57 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                       <button onClick={() => { setShowStats(false); setStatsBook(null); }} className={`p-1 rounded-full ${isDark ? 'hover:bg-white/10 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-500'}`}><X size={20}/></button>
                   </div>
                   <div className="p-6 grid grid-cols-2 gap-4">
+                      {/* Total Time */}
                       <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
                           <Clock size={24} className="text-primary"/>
                           <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{formatTime(currentStats.totalTime)}</span>
                           <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'totalTime')}</span>
                       </div>
+                      
+                      {/* Pages Read */}
+                      <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                          <BookIcon size={24} className="text-blue-400"/>
+                          <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{currentStats.totalPagesRead}</span>
+                          <span className="text-xs text-zinc-500 uppercase font-bold">Pages Read</span>
+                      </div>
+
+                      {/* Sessions */}
                       <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
                           <Activity size={24} className="text-accent"/>
                           <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{currentStats.totalSessions}</span>
                           <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'sessions')}</span>
                       </div>
+
+                      {/* Streak */}
+                      <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                          <Zap size={24} className="text-yellow-500"/>
+                          <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{(currentStats as any).streak} days</span>
+                          <span className="text-xs text-zinc-500 uppercase font-bold">Streak</span>
+                      </div>
                       
-                      {statsBook ? (
-                          <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 col-span-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
-                              <Calendar size={24} className="text-green-500"/>
-                              <span className={`text-xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>
+                      {/* Row 2: Averages */}
+                      <div className={`p-3 rounded-lg border flex justify-between items-center col-span-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                          <span className="text-xs text-zinc-500 font-bold uppercase">Avg Session</span>
+                          <span className={`font-mono font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>
+                              {formatTime((currentStats as any).avgSession)}
+                          </span>
+                      </div>
+
+                      {!statsBook && (
+                          <div className={`p-3 rounded-lg border flex justify-between items-center col-span-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                              <span className="text-xs text-zinc-500 font-bold uppercase">{t(settings.language, 'booksStarted')}</span>
+                              <span className={`font-mono font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>
+                                  {(currentStats as any).booksStarted} / {books.length}
+                              </span>
+                          </div>
+                      )}
+
+                      {statsBook && (
+                          <div className={`p-3 rounded-lg border flex justify-between items-center col-span-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
+                              <span className="text-xs text-zinc-500 font-bold uppercase">{t(settings.language, 'lastRead')}</span>
+                              <span className={`font-mono font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>
                                   {'lastRead' in currentStats && currentStats.lastRead ? new Date(currentStats.lastRead).toLocaleDateString() : '-'}
                               </span>
-                              <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'lastRead')}</span>
-                          </div>
-                      ) : (
-                          <div className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-2 col-span-2 ${isDark ? 'bg-black/20 border-white/5' : 'bg-zinc-50 border-zinc-200'}`}>
-                              <BookOpen size={24} className="text-green-500"/>
-                              <span className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>{(currentStats as any).booksStarted} / {books.length}</span>
-                              <span className="text-xs text-zinc-500 uppercase font-bold">{t(settings.language, 'booksStarted')}</span>
                           </div>
                       )}
                   </div>
@@ -379,10 +468,11 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
           </div>
       )}
 
-      {/* Edit Modal (unchanged logic, just rendering) */}
+      {/* Edit Modal... (Code remains unchanged, just ensuring it renders correctly) */}
       {(pendingFile || editingBook) && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
               <div className={`border rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200 ${isDark ? 'bg-surfaceLight border-white/10' : 'bg-white border-zinc-200'}`}>
+                  {/* ... Edit modal content ... */}
                   <div className={`p-4 border-b flex justify-between items-center ${isDark ? 'border-white/5 bg-black/20' : 'border-zinc-100 bg-zinc-50'}`}>
                       <h2 className={`font-bold text-lg ${isDark ? 'text-zinc-100' : 'text-zinc-800'}`}>{pendingFile ? t(settings.language, 'editBook') : t(settings.language, 'editBookDetails')}</h2>
                       <button onClick={() => { setPendingFile(null); setEditingBook(null); }} className={`p-1 rounded-full ${isDark ? 'hover:bg-white/10 text-zinc-400' : 'hover:bg-zinc-200 text-zinc-500'}`}><X size={20}/></button>
@@ -513,6 +603,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
         <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 md:gap-6">
             {books.map(book => (
             <div key={book.id} className={`group relative rounded-xl overflow-hidden shadow-xl hover:shadow-2xl hover:shadow-primary/10 transition-all duration-300 hover:-translate-y-1 cursor-pointer border ${isDark ? 'bg-surfaceLight border-zinc-800 hover:border-zinc-700' : 'bg-white border-zinc-200 hover:border-zinc-300'}`} onClick={() => onOpenBook(book)}>
+                {/* ... Grid item content ... */}
                 <div className="aspect-[2/3] w-full relative bg-zinc-900 overflow-hidden">
                     {book.coverUrl ? (
                         <img src={book.coverUrl} alt={book.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
@@ -570,7 +661,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
           <div className="flex flex-col gap-3">
               {books.map(book => (
                   <div key={book.id} className={`group relative rounded-xl overflow-hidden shadow-md hover:shadow-xl transition-all duration-200 cursor-pointer border flex items-center p-3 gap-4 ${isDark ? 'bg-surfaceLight hover:bg-zinc-800 border-zinc-800' : 'bg-white hover:bg-zinc-50 border-zinc-200'}`} onClick={() => onOpenBook(book)}>
-                      {/* ... existing list view item content ... */}
+                      {/* Fixed List View Mobile Layout */}
                       <div className="h-20 w-14 relative bg-zinc-900 overflow-hidden rounded-md shrink-0">
                         {book.coverUrl ? (
                             <img src={book.coverUrl} alt={book.title} className="w-full h-full object-cover" />
@@ -584,9 +675,9 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                       
                       <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
                           <h3 className={`font-bold text-sm md:text-base truncate ${isDark ? 'text-zinc-100' : 'text-zinc-800'}`} title={book.title}>{book.title}</h3>
-                          <div className="flex items-center gap-3">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                               {book.progress !== undefined && (
-                                  <div className="flex items-center gap-2 w-32">
+                                  <div className="flex items-center gap-2 w-24 md:w-32">
                                       <div className="h-1.5 flex-1 bg-zinc-700 rounded-full overflow-hidden">
                                           <div className="h-full bg-accent" style={{ width: `${(book.progress / 100) * 100}%` }}></div>
                                       </div>
@@ -597,12 +688,14 @@ const Bookshelf: React.FC<BookshelfProps> = ({ onOpenBook, settings, setSettings
                           </div>
                       </div>
 
-                      <div className="flex items-center gap-3">
-                         <div className="flex gap-1">
-                             {book.mokuroFile && <span className="px-1.5 py-0.5 bg-zinc-700 text-zinc-300 text-[10px] font-bold rounded flex items-center gap-1"><FileText size={10} /> OCR</span>}
-                             {book.translatedFile && <span className="px-1.5 py-0.5 bg-zinc-700 text-zinc-300 text-[10px] font-bold rounded flex items-center gap-1"><Globe size={10} /> TR</span>}
+                      <div className="flex items-center gap-2 md:gap-3 shrink-0">
+                         {/* Badges - Adjusted for mobile list view */}
+                         <div className="flex flex-col md:flex-row gap-1 items-end">
+                             {book.mokuroFile && <span className="px-1.5 py-0.5 bg-zinc-700 text-zinc-300 text-[10px] font-bold rounded flex items-center gap-1 whitespace-nowrap"><FileText size={10} /> OCR</span>}
+                             {book.translatedFile && <span className="px-1.5 py-0.5 bg-zinc-700 text-zinc-300 text-[10px] font-bold rounded flex items-center gap-1 whitespace-nowrap"><Globe size={10} /> TR</span>}
                          </div>
                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {/* ... actions ... */}
                             <label className="p-2 text-zinc-400 hover:text-green-500 hover:bg-white/5 rounded-full cursor-pointer transition-colors" onClick={(e) => e.stopPropagation()} title="Upload Translation">
                                 <Globe size={16} />
                                 <input type="file" accept=".zip,.cbz" className="hidden" onChange={(e) => handleTransUpload(e, book.id)} />

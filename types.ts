@@ -28,6 +28,7 @@ export interface ReadingStats {
     totalTime: number; // in milliseconds
     lastRead: number;
     sessions: number;
+    pagesRead: number; // Added
     dailyTime: Record<string, number>; // YYYY-MM-DD -> ms
 }
 
@@ -122,6 +123,7 @@ export interface ReaderSettings {
   tesseractLanguage: string;
   ttsEnabled: boolean; 
   audioSource: 'browser' | 'external'; // Added
+  externalAudioParamsEnabled?: boolean; // New setting
   ttsVoiceURI: string;
   ttsRate: number; // Added
   ttsPitch: number; // Added

@@ -38,12 +38,10 @@ interface ImageViewerProps {
 
 const getLineSeparator = (lang: string | undefined) => {
     // CJK languages usually don't use spaces between lines/words in this context
-    // If the original text didn't have a space, we shouldn't add one.
     const cjk = ['zh', 'zh-Hant', 'ja', 'ko'];
     if (lang && cjk.includes(lang)) {
         return '';
     }
-    // For English and others, add a standard space
     return ' ';
 };
 
@@ -114,7 +112,7 @@ const MagnifierOverlay: React.FC<{ containerRef: React.RefObject<HTMLDivElement 
 
     return (
         <div 
-            className="absolute inset-0 z-[60] touch-none pointer-events-none"
+            className="absolute inset-0 z-[100] touch-none pointer-events-none" // Increased Z-Index
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
         >
@@ -146,7 +144,7 @@ const MagnifierLens: React.FC<{
 
     return (
         <div 
-            className="pointer-events-auto z-[70] fixed border-4 border-white shadow-2xl rounded-full bg-black cursor-move"
+            className="pointer-events-auto fixed border-4 border-white shadow-2xl rounded-full bg-black cursor-move"
             onPointerDown={onDragStart}
             onPointerUp={(e) => (e.target as HTMLElement).releasePointerCapture(e.pointerId)}
             style={{
@@ -157,6 +155,7 @@ const MagnifierLens: React.FC<{
                 backgroundImage: `url(${src})`,
                 backgroundSize: `${imgRect.width * zoomLevel}px ${imgRect.height * zoomLevel}px`,
                 backgroundPosition: `-${bgX}px -${bgY}px`,
+                zIndex: 100 // Explicit high z-index on element
             }} 
         >
             <div className="absolute inset-0 border border-black/10 rounded-full" />
@@ -441,14 +440,14 @@ const LazyWebtoonImage: React.FC<{
                         />
                     )}
 
-                    {/* Render SVG Overlay for Panel Mode (Visuals only, clicks handled by parent for simpler event delegation in webtoon mode, OR overlay itself in pagination) */}
+                    {/* Render SVG Overlay for Panel Mode */}
                     {ocr && showOcr && settings.dictionaryMode === 'panel' && (
                         <div className="absolute inset-0 pointer-events-none">
                             <svg className="w-full h-full" viewBox={`0 0 ${imgDim.w} ${imgDim.h}`}>
                                 <ImageOverlay 
                                     ocrData={ocr} 
                                     overlayStyle={settings.overlayStyle}
-                                    onOcrClick={() => {}} // Handled by parent container in webtoon mode for better scroll perf
+                                    onOcrClick={() => {}} 
                                     allowInteraction={false}
                                     learningLanguage={settings.learningLanguage}
                                 />
@@ -477,6 +476,9 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
   const initialDist = useRef<number | null>(null); // for pinch zoom
   const initialScale = useRef(1);
 
+  // Transition state to toggle classes
+  const [isTransitioning, setIsTransitioning] = useState(true);
+
   // Sync prop scale change (e.g. from reset)
   useEffect(() => {
       // If props scale implies reset, update ref
@@ -484,6 +486,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
           transform.current.scale = 1;
           transform.current.x = 0;
           transform.current.y = 0;
+          setIsTransitioning(true);
           updateDOM();
       }
   }, [scale]);
@@ -491,6 +494,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
   // Reset on page change
   useEffect(() => {
       transform.current = { x: 0, y: 0, scale: 1 };
+      setIsTransitioning(true);
       updateDOM();
       if (scale !== 1) setScale(1);
   }, [pages]);
@@ -513,21 +517,25 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
       
       // Allow interacting with the text-box (Popup mode)
       if ((e.target as HTMLElement).closest('.text-box')) {
-          // If we are in popup mode, we want to allow selection, but maybe block dragging?
-          // For now, let default behavior happen for text selection, but stop propagation to drag handler
           e.stopPropagation(); 
           return;
       }
       
-      e.preventDefault(); // Important: Prevent default browser behavior (scrolling/selection) for the viewer dragging
+      e.preventDefault(); 
+      e.stopPropagation(); // Stop propagation to prevent outer scroll
       
-      containerRef.current?.setPointerCapture(e.pointerId);
+      // Important: Set capture on CURRENT TARGET (the dragging div), not containerRef (the wrapper)
+      // This ensures this div continues to receive events even if mouse leaves bounds
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      
       pointers.current.set(e.pointerId, e);
+      setIsTransitioning(false);
 
       if (pointers.current.size === 1) {
           isDragging.current = true;
           startPos.current = { x: e.clientX, y: e.clientY }; 
-          lastPos.current = { x: e.clientX, y: e.clientY };
+          // Store current transform as start point for relative drag
+          lastPos.current = { x: transform.current.x, y: transform.current.y };
       } else if (pointers.current.size === 2) {
           isDragging.current = false; // Pinch overrides drag
           const p = Array.from(pointers.current.values());
@@ -539,40 +547,32 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
   const onPointerMove = (e: React.PointerEvent) => {
       if (!pointers.current.has(e.pointerId)) return;
       pointers.current.set(e.pointerId, e); 
-      e.preventDefault(); // Stop native scrolling on non-iOS
+      e.preventDefault(); 
 
       if (pointers.current.size === 2 && initialDist.current) {
           // Pinch Zoom
           const p = Array.from(pointers.current.values());
           const dist = getDistance(p[0], p[1]);
-          const newScale = Math.min(Math.max(1, initialScale.current * (dist / initialDist.current)), 5);
+          const newScale = Math.min(Math.max(0.5, initialScale.current * (dist / initialDist.current)), 5);
           
           transform.current.scale = newScale;
-          // If zooming out to 1, reset center
-          if (newScale <= 1.05) {
-              transform.current.x = 0;
-              transform.current.y = 0;
-          }
+          // If zooming out to < 1, reset center roughly? No, let user free zoom.
           updateDOM();
       } else if (isDragging.current && pointers.current.size === 1) {
-          // Pan (only if scaled > 1)
-          if (transform.current.scale > 1.01) {
-              const dx = e.clientX - lastPos.current.x;
-              const dy = e.clientY - lastPos.current.y;
-              transform.current.x += dx; 
-              transform.current.y += dy;
-              lastPos.current = { x: e.clientX, y: e.clientY };
-              requestAnimationFrame(updateDOM);
-          } else {
-              // Just track position for click detection if not scaled
-              lastPos.current = { x: e.clientX, y: e.clientY };
-          }
+          // Free Drag
+          const dx = e.clientX - startPos.current.x;
+          const dy = e.clientY - startPos.current.y;
+          
+          transform.current.x = lastPos.current.x + dx; 
+          transform.current.y = lastPos.current.y + dy;
+          requestAnimationFrame(updateDOM);
       }
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
       pointers.current.delete(e.pointerId);
-      containerRef.current?.releasePointerCapture(e.pointerId);
+      // Release capture
+      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch(e) {}
       
       if (pointers.current.size < 2) initialDist.current = null;
       
@@ -586,8 +586,9 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
                   if (settings.dictionaryMode === 'panel') {
                       handleOCRClickLogic(e);
                   } else {
-                      // Snap back if scaled to 1
-                       if (transform.current.scale <= 1.05) {
+                      // Only snap back if effectively a click and zoom is negligible
+                       if (Math.abs(transform.current.scale - 1) < 0.1) {
+                           setIsTransitioning(true);
                            transform.current.x = 0;
                            transform.current.y = 0;
                            transform.current.scale = 1;
@@ -595,12 +596,16 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
                            setScale(1);
                        }
                   }
+              } else {
+                  // After drag ends, check bounds or snap back if desired? 
+                  // User requested "Smooth restore effect" on page turn/double click, not necessarily bounce back.
               }
           }
       } else if (pointers.current.size === 1) {
-          // If one finger remains, resume dragging from current position
+          // If one finger remains, resume dragging from current position logic
           const p = pointers.current.values().next().value;
-          lastPos.current = { x: p.clientX, y: p.clientY };
+          startPos.current = { x: p.clientX, y: p.clientY };
+          lastPos.current = { x: transform.current.x, y: transform.current.y };
           isDragging.current = true;
       }
   };
@@ -661,7 +666,7 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
 
   return (
     <div 
-      className="w-full h-full overflow-hidden relative flex items-center justify-center cursor-grab touch-none select-none"
+      className="w-full h-full overflow-hidden relative flex items-center justify-center cursor-grab touch-none select-none bg-black/5 dark:bg-black/20"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -669,15 +674,22 @@ const PaginationViewer: React.FC<ImageViewerProps & { containerRef: React.RefObj
       onWheel={(e) => {
           if (e.ctrlKey) {
              e.preventDefault();
-             const newScale = Math.min(Math.max(1, transform.current.scale - e.deltaY * 0.01), 5);
+             setIsTransitioning(false);
+             const newScale = Math.min(Math.max(0.5, transform.current.scale - e.deltaY * 0.01), 5);
              transform.current.scale = newScale;
              updateDOM();
           }
       }}
+      onDoubleClick={() => {
+          setIsTransitioning(true);
+          transform.current = { x: 0, y: 0, scale: 1 };
+          updateDOM();
+          setScale(1);
+      }}
     >
       <div 
         ref={contentRef}
-        className={`relative flex items-center justify-center gap-2 ${readingDirection === 'rtl' ? 'flex-row-reverse' : 'flex-row'}`}
+        className={`relative flex items-center justify-center gap-0 ${readingDirection === 'rtl' ? 'flex-row-reverse' : 'flex-row'} ${isTransitioning ? 'transition-transform duration-300' : 'transition-none'}`}
         style={{ transformOrigin: 'center', willChange: 'transform' }} 
       >
         {displayPages.map((page, index) => (
@@ -707,7 +719,7 @@ const PageWrapper: React.FC<{
             <img 
                 src={page.url} 
                 alt={`Page`} 
-                className="max-h-screen object-contain pointer-events-none select-none block"
+                className="max-h-screen object-contain pointer-events-none select-none block shadow-2xl"
                 style={{ maxWidth: settings.pageViewMode === 'double' ? '50vw' : '100vw' }}
                 onLoad={(e) => setImgDim({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
             />
@@ -761,7 +773,6 @@ const TextOverlayLayer: React.FC<{
                 const width = x2 - x1;
                 const height = y2 - y1;
                 
-                // Convert coordinates to percentages
                 const leftPct = (x1 / naturalWidth) * 100;
                 const topPct = (y1 / naturalHeight) * 100;
                 const widthPct = (width / naturalWidth) * 100;
@@ -799,14 +810,14 @@ const TextOverlayLayer: React.FC<{
                                 display: 'inline-block', // Shrink to fit text
                                 pointerEvents: 'auto',
                                 userSelect: 'text',
-                                fontSize: `${fontSize}px`, // Use setting
+                                fontSize: `${fontSize}px`, 
                                 writingMode: isJapanese ? 'vertical-rl' : 'horizontal-tb',
                                 textOrientation: 'upright',
                                 lineHeight: isJapanese ? undefined : '1.2',
                                 whiteSpace: 'pre-wrap',
                                 margin: 0,
                                 padding: '2px', // Minimal padding for visual
-                                caretColor: 'transparent' // Hide cursor when transparent
+                                caretColor: 'transparent'
                             }}
                             onMouseEnter={(e) => {
                                 e.currentTarget.style.color = 'black';

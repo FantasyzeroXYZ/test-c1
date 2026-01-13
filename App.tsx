@@ -21,16 +21,17 @@ const App: React.FC = () => {
       dictionaryMode: 'panel',
       dictionarySource: 'api',
       learningLanguage: 'en', 
-      overlayStyle: 'hidden', 
+      overlayStyle: 'outline', // Default to outline for panel mode
       tesseractLanguage: 'eng', 
       ttsEnabled: true,
       audioSource: 'browser',
+      externalAudioParamsEnabled: false, // Default false
       ttsVoiceURI: '',
       ttsRate: 1,
       ttsPitch: 1,
       ttsVolume: 1,
       segmentationMethod: 'browser',
-      webSearchEngine: 'google',
+      webSearchEngine: 'bing_trans', // Changed default
       webSearchMode: 'iframe',
       keybindings: {
           nextPage: ['ArrowRight', ' '],

@@ -84,14 +84,14 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
       const interval = setInterval(() => {
           const now = Date.now();
           const delta = now - lastTimeUpdate.current;
-          updateBookStats(book.id, delta);
+          updateBookStats(book.id, delta, 0);
           lastTimeUpdate.current = now;
       }, 60000);
 
       const handleVisibility = () => {
           if (document.hidden) {
               const now = Date.now();
-              updateBookStats(book.id, now - lastTimeUpdate.current);
+              updateBookStats(book.id, now - lastTimeUpdate.current, 0);
               lastTimeUpdate.current = now;
           } else {
               lastTimeUpdate.current = Date.now();
@@ -102,7 +102,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
       return () => {
           clearInterval(interval);
           document.removeEventListener('visibilitychange', handleVisibility);
-          updateBookStats(book.id, Date.now() - lastTimeUpdate.current);
+          updateBookStats(book.id, Date.now() - lastTimeUpdate.current, 0);
       };
   }, [book.id]);
 
@@ -230,10 +230,15 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
     return () => { active = false; };
   }, [zip, imageFiles, currentPage, settings.pageViewMode, settings.compareMode, mokuroData, translatedZip, book.pageOffset, showOcr]); 
 
-  
+  // Update progress and stats when page changes
   useEffect(() => {
       if (settings.pageViewMode !== 'webtoon') {
-          const t = setTimeout(() => updateBookProgress(book.id, currentPage), 500);
+          const t = setTimeout(() => {
+              updateBookProgress(book.id, currentPage);
+              // Count page read
+              const pagesViewed = (settings.pageViewMode === 'double' && !settings.compareMode) ? 2 : 1;
+              updateBookStats(book.id, 0, pagesViewed);
+          }, 500);
           return () => clearTimeout(t);
       }
   }, [currentPage]);
@@ -243,11 +248,16 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
   const nextPage = useCallback(() => { setCurrentPage(p => Math.min(imageFiles.length - 1, p + step)); setScale(1); }, [imageFiles.length, step]);
   const toggleFullscreen = () => { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); };
 
-  // Improved Gamepad Support
+  // Improved Gamepad Support with Sidebar check
   const lastGamepadAction = useRef(0);
   useEffect(() => {
       let rafId: number;
       const pollGamepad = () => {
+          if (activeSidebar !== 'none') {
+              rafId = requestAnimationFrame(pollGamepad);
+              return; // Disable gamepad if sidebar open
+          }
+
           const gamepads = navigator.getGamepads();
           for (const gp of gamepads) {
               if (!gp) continue;
@@ -281,7 +291,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
       };
       rafId = requestAnimationFrame(pollGamepad);
       return () => cancelAnimationFrame(rafId);
-  }, [nextPage, prevPage, settings.readingDirection, settings.keybindings]);
+  }, [nextPage, prevPage, settings.readingDirection, settings.keybindings, activeSidebar]);
 
   useEffect(() => {
       const handleKey = (e: KeyboardEvent) => {
@@ -295,6 +305,9 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
               }
               return;
           }
+
+          // Disable shortcuts if sidebar is open (to prevent conflict with recording)
+          if (activeSidebar === 'settings') return;
 
           const keys = settings.keybindings;
           if (keys.nextPage.includes(e.key)) {
@@ -320,7 +333,7 @@ const Reader: React.FC<ReaderProps> = ({ book, onExit, settings, setSettings, an
       window.addEventListener('keydown', handleKey);
       document.addEventListener('fullscreenchange', handleFs);
       return () => { window.removeEventListener('keydown', handleKey); document.removeEventListener('fullscreenchange', handleFs); };
-  }, [nextPage, prevPage, settings, isOcrSelecting, isCroppingForBookmark]);
+  }, [nextPage, prevPage, settings, isOcrSelecting, isCroppingForBookmark, activeSidebar]);
 
   const handleLeftClick = settings.readingDirection === 'ltr' ? prevPage : nextPage;
   const handleRightClick = settings.readingDirection === 'ltr' ? nextPage : prevPage;

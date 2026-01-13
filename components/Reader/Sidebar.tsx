@@ -74,6 +74,8 @@ const Sidebar: React.FC<SidebarProps> = ({
     isOpen, onClose, book, onBookUpdate, showOcr, setShowOcr, ankiSettings, setAnkiSettings, readerSettings, setReaderSettings, bookmarks, onJumpToPage, onEditBookmark, onDeleteBookmark
 }) => {
     const [recordingKey, setRecordingKey] = useState<keyof Keybindings | null>(null);
+    const [localKeybindings, setLocalKeybindings] = useState<Keybindings>(readerSettings.keybindings);
+    
     const [offsetInput, setOffsetInput] = useState(book?.pageOffset || 0);
     const [loadingAnki, setLoadingAnki] = useState(false);
     const [isAnkiConnected, setIsAnkiConnected] = useState(false);
@@ -92,6 +94,11 @@ const Sidebar: React.FC<SidebarProps> = ({
     const [importingDict, setImportingDict] = useState(false);
     const [importStatus, setImportStatus] = useState('');
     const [importLang, setImportLang] = useState<string>('universal');
+
+    // Sync local keys with global when sidebar opens or global changes (if not editing)
+    useEffect(() => {
+        setLocalKeybindings(readerSettings.keybindings);
+    }, [readerSettings.keybindings]);
 
     useEffect(() => {
         // Update default test text based on learning language
@@ -209,11 +216,12 @@ const Sidebar: React.FC<SidebarProps> = ({
         }
     };
 
+    // Gamepad recording logic - only affects local state
     useEffect(() => {
         if (!recordingKey) return;
         let rafId: number;
         const handleInputRecord = (inputName: string) => {
-            setReaderSettings({ ...readerSettings, keybindings: { ...readerSettings.keybindings, [recordingKey]: [inputName] } });
+            setLocalKeybindings(prev => ({ ...prev, [recordingKey]: [inputName] }));
             setRecordingKey(null);
         };
         const pollRecording = () => {
@@ -230,15 +238,26 @@ const Sidebar: React.FC<SidebarProps> = ({
         };
         rafId = requestAnimationFrame(pollRecording);
         return () => cancelAnimationFrame(rafId);
-    }, [recordingKey, readerSettings, setReaderSettings]);
+    }, [recordingKey]);
 
+    // Keyboard recording logic - only affects local state
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (recordingKey) { e.preventDefault(); e.stopPropagation(); setReaderSettings({ ...readerSettings, keybindings: { ...readerSettings.keybindings, [recordingKey]: [e.key] } }); setRecordingKey(null); }
+            if (recordingKey) { 
+                e.preventDefault(); 
+                e.stopPropagation(); // Stop propagation to reader
+                setLocalKeybindings(prev => ({ ...prev, [recordingKey]: [e.key] })); 
+                setRecordingKey(null); 
+            }
         };
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [recordingKey, readerSettings, setReaderSettings]);
+        window.addEventListener('keydown', handleKeyDown, { capture: true }); // Capture phase to prevent bubbling
+        return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
+    }, [recordingKey]);
+
+    const handleSaveKeybindings = () => {
+        setReaderSettings({ ...readerSettings, keybindings: localKeybindings });
+        // Optional: Provide feedback
+    };
 
     const handleTestAnki = async () => {
         setLoadingAnki(true);
@@ -305,6 +324,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         if (k === ' ') return 'Space';
         if (k.startsWith('Arrow')) return k.replace('Arrow', '');
         if (k.startsWith('GP_Btn_')) return `GP ${k.split('_')[2]}`;
+        if (k.startsWith('GP_Axis_')) return `GP Axis ${k.split('_')[2]} ${k.split('_')[3]}`;
         return k.toUpperCase();
     };
 
@@ -327,7 +347,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin scrollbar-thumb-current scrollbar-track-transparent">
                 
                 {/* General Settings Moved First */}
-                <Section title={t(readerSettings.language, 'general')} icon={<Settings size={14}/>} theme={theme} defaultOpen={true}>
+                <Section title={t(readerSettings.language, 'general')} icon={<Settings size={14}/>} theme={theme} defaultOpen={false}>
                      <div className="space-y-4">
                         <div>
                             <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'language')}</label>
@@ -486,27 +506,41 @@ const Sidebar: React.FC<SidebarProps> = ({
                                         <option value="external">{t(readerSettings.language, 'audioExternal')}</option>
                                     </select>
                                     {readerSettings.audioSource === 'external' && (
-                                        <button onClick={testExternalConnection} disabled={testingExternal} className={`mt-2 w-full py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 border ${itemBg} ${textSub} ${itemHover}`}>
-                                            {testingExternal ? <Loader2 size={12} className="animate-spin"/> : <Activity size={12}/>}
-                                            {t(readerSettings.language, 'testScript')}
-                                        </button>
+                                        <>
+                                            <button onClick={testExternalConnection} disabled={testingExternal} className={`mt-2 w-full py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 border ${itemBg} ${textSub} ${itemHover}`}>
+                                                {testingExternal ? <Loader2 size={12} className="animate-spin"/> : <Activity size={12}/>}
+                                                {t(readerSettings.language, 'testScript')}
+                                            </button>
+                                            <div className="mt-2">
+                                                <Toggle 
+                                                    label={t(readerSettings.language, 'enableExternalParams')} 
+                                                    checked={readerSettings.externalAudioParamsEnabled || false} 
+                                                    onChange={() => setReaderSettings({...readerSettings, externalAudioParamsEnabled: !readerSettings.externalAudioParamsEnabled})} 
+                                                    theme={theme} 
+                                                />
+                                            </div>
+                                        </>
                                     )}
                                 </div>
 
-                                {readerSettings.audioSource !== 'external' && (
+                                {/* Conditionally show Params */}
+                                <div>
+                                    {readerSettings.audioSource === 'browser' && (
+                                    <div>
+                                        <label className={`text-[10px] uppercase font-bold block px-1 mb-1 ${textSub}`}>{t(readerSettings.language, 'ttsVoice')}</label>
+                                        <select 
+                                            value={readerSettings.ttsVoiceURI} 
+                                            onChange={(e) => setReaderSettings({...readerSettings, ttsVoiceURI: e.target.value})}
+                                            className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
+                                        >
+                                            <option value="">Default</option>
+                                            {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>)}
+                                        </select>
+                                    </div>
+                                    )}
+                                    
+                                    {(readerSettings.audioSource === 'browser' || (readerSettings.audioSource === 'external' && readerSettings.externalAudioParamsEnabled)) && (
                                     <>
-                                        <div>
-                                            <label className={`text-[10px] uppercase font-bold block px-1 mb-1 ${textSub}`}>{t(readerSettings.language, 'ttsVoice')}</label>
-                                            <select 
-                                                value={readerSettings.ttsVoiceURI} 
-                                                onChange={(e) => setReaderSettings({...readerSettings, ttsVoiceURI: e.target.value})}
-                                                className={`w-full rounded-xl px-3 py-2 text-sm outline-none border ${inputBg} ${textMain}`}
-                                            >
-                                                <option value="">Default</option>
-                                                {voices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>)}
-                                            </select>
-                                        </div>
-                                        
                                         <div>
                                             <label className={`text-[10px] uppercase font-bold flex justify-between px-1 ${textSub}`}><span>Rate</span> <span>{readerSettings.ttsRate}x</span></label>
                                             <input 
@@ -535,7 +569,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                                             />
                                         </div>
                                     </>
-                                )}
+                                    )}
+                                </div>
 
                                 <div className="flex gap-2 pt-1">
                                     <input value={ttsTestText} onChange={e => setTtsTestText(e.target.value)} className={`flex-1 rounded-lg px-2 py-1 text-xs border ${inputBg} ${textMain}`} />
@@ -593,7 +628,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </Section>
 
                 {/* Anki Integration Moved Second */}
-                <Section title={t(readerSettings.language, 'anki')} icon={<Database size={14}/>} theme={theme}>
+                <Section title={t(readerSettings.language, 'anki')} icon={<Database size={14}/>} theme={theme} defaultOpen={false}>
                      {/* ... Anki settings ... */}
                      <div className="space-y-3">
                          <div className="grid grid-cols-3 gap-2">
@@ -664,7 +699,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </Section>
 
                 {book && (
-                    <Section title={t(readerSettings.language, 'bookDetails')} icon={<BookIcon size={14}/>} theme={theme}>
+                    <Section title={t(readerSettings.language, 'bookDetails')} icon={<BookIcon size={14}/>} theme={theme} defaultOpen={false}>
                         <div className={`rounded-xl p-3 border space-y-3 ${isLight ? 'bg-zinc-50 border-zinc-200' : 'bg-surfaceLight/50 border-white/5'}`}>
                              <div>
                                 <label className={`text-[10px] uppercase font-bold mb-1 block ${textSub}`}>{t(readerSettings.language, 'translation')}</label>
@@ -687,9 +722,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </Section>
                 )}
                 
-                {/* ... Display/Reading/Shortcuts/About sections ... */}
-                {/* (Kept as is, omitting for brevity if not changed, but must include full file content) */}
-                <Section title={t(readerSettings.language, 'display')} icon={<Monitor size={14}/>} theme={theme}>
+                <Section title={t(readerSettings.language, 'display')} icon={<Monitor size={14}/>} theme={theme} defaultOpen={false}>
                     <div className="space-y-3">
                          <Toggle label={t(readerSettings.language, 'showOcr')} checked={showOcr} onChange={() => setShowOcr(!showOcr)} icon={<Eye size={16}/>} theme={theme} />
                          
@@ -718,7 +751,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                 </Section>
 
-                <Section title={t(readerSettings.language, 'reading')} icon={<BookIcon size={14}/>} theme={theme}>
+                <Section title={t(readerSettings.language, 'reading')} icon={<BookIcon size={14}/>} theme={theme} defaultOpen={false}>
                      <div className="space-y-4">
                         <div>
                             <label className={`text-[10px] uppercase font-bold mb-1.5 block px-1 ${textSub}`}>{t(readerSettings.language, 'viewMode')}</label>
@@ -755,9 +788,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                      </div>
                 </Section>
                 
-                <Section title={t(readerSettings.language, 'shortcuts')} icon={<Keyboard size={14}/>} theme={theme}>
+                <Section title={t(readerSettings.language, 'shortcuts')} icon={<Keyboard size={14}/>} theme={theme} defaultOpen={false}>
                     <div className="space-y-3">
-                        {Object.keys(readerSettings.keybindings).map((k) => (
+                        {Object.keys(localKeybindings).map((k) => (
                             <div key={k} className="flex items-center justify-between">
                                 <span className={`text-xs capitalize ${textSub}`}>{t(readerSettings.language, k as any) || k}</span>
                                 {recordingKey === k ? (
@@ -770,18 +803,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                                         onClick={() => setRecordingKey(k as any)} 
                                         className={`px-3 py-1.5 rounded-lg text-xs font-mono border ${itemBg} ${textMain} ${itemHover}`}
                                     >
-                                        {readerSettings.keybindings[k as keyof Keybindings].map(formatKey).join(', ') || t(readerSettings.language, 'clickToBind')}
+                                        {localKeybindings[k as keyof Keybindings].map(formatKey).join(', ') || t(readerSettings.language, 'clickToBind')}
                                     </button>
                                 )}
                             </div>
                         ))}
-                        <button onClick={() => setReaderSettings({...readerSettings, keybindings: { nextPage: ['ArrowRight', ' '], prevPage: ['ArrowLeft'], toggleMenu: ['m'], fullscreen: ['f'] }})} className={`w-full mt-2 py-1.5 text-[10px] flex items-center justify-center gap-1 ${textSub} ${itemHover}`}>
+                        <button 
+                            onClick={handleSaveKeybindings} 
+                            className={`w-full mt-2 py-2 text-xs font-bold flex items-center justify-center gap-2 rounded-lg bg-primary text-white hover:bg-blue-600 transition-colors shadow-sm`}
+                        >
+                            <Save size={12}/> {t(readerSettings.language, 'save')}
+                        </button>
+                        <button onClick={() => setReaderSettings({...readerSettings, keybindings: { nextPage: ['ArrowRight', ' '], prevPage: ['ArrowLeft'], toggleMenu: ['m'], fullscreen: ['f'] }})} className={`w-full mt-1 py-1.5 text-[10px] flex items-center justify-center gap-1 ${textSub} ${itemHover}`}>
                             <RotateCcw size={10}/> {t(readerSettings.language, 'resetKeys')}
                         </button>
                     </div>
                 </Section>
 
-                <Section title="About" icon={<Info size={14}/>} theme={theme}>
+                <Section title="About" icon={<Info size={14}/>} theme={theme} defaultOpen={false}>
                     <div className={`text-xs space-y-2 p-2 rounded-lg ${inputBg}`}>
                         <p className={`font-bold ${textMain}`}>Mokuro Comic Reader</p>
                         <p className={textSub}>A modern web-based comic reader with OCR and Anki integration.</p>
